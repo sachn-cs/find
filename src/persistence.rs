@@ -4,7 +4,7 @@
 
 //! Persistence layer: atomic checkpoints, binary caches, and JSON exports.
 //!
-//! All I/O side effects are isolated here so that [`search`] remains a pure
+//! All I/O side effects are isolated here so that `search` remains a pure
 //! domain module. Consumers should use [`Checkpoint`] for durable progress
 //! and [`FileCacheWriter`] for binary cache generation.
 
@@ -101,6 +101,18 @@ impl Checkpoint {
             file.sync_all().map_err(FindError::Io)?;
         }
         fs::rename(&tmp_path, path).map_err(FindError::Io)?;
+
+        // On Unix, fsync the parent directory so the rename is durable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            if let Some(parent) = path.parent() {
+                if let Ok(dir) = std::fs::File::open(parent) {
+                    let _ = unsafe { libc::fsync(dir.as_raw_fd()) };
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -261,7 +273,7 @@ pub fn save_variants_to_json(variants: &[OffsetVariant], dir_path: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::{generate_variants};
+    use crate::search::generate_variants;
     use k256::elliptic_curve::sec1::ToEncodedPoint;
     use k256::Scalar;
     use tempfile::tempdir;
@@ -372,5 +384,71 @@ mod tests {
             last_x: "00".repeat(32),
         };
         assert!(cp.verify("def").is_ok());
+    }
+
+    /// Verifies that [`Checkpoint::verify`] succeeds for a valid anchor.
+    #[test]
+    fn test_checkpoint_verify_valid() {
+        let last_j = 7u64;
+        let expected_p = crate::ecc::scalar_mul_g(&Scalar::from(last_j));
+        let expected_x = crate::ecc::to_hex_x(&expected_p);
+
+        let cp = Checkpoint {
+            last_j,
+            pubkey: "dummy".to_string(),
+            last_x: expected_x,
+        };
+        assert!(cp.verify("dummy").is_ok());
+    }
+
+    /// Verifies that [`Checkpoint::verify`] fails when the anchor is corrupted.
+    #[test]
+    fn test_checkpoint_verify_corrupted() {
+        let last_j = 7u64;
+        let expected_p = crate::ecc::scalar_mul_g(&Scalar::from(last_j));
+        let expected_x = crate::ecc::to_hex_x(&expected_p);
+
+        let cp = Checkpoint {
+            last_j,
+            pubkey: "dummy".to_string(),
+            last_x: expected_x.replace('0', "1"),
+        };
+        assert!(cp.verify("dummy").is_err());
+        assert!(cp
+            .verify("dummy")
+            .unwrap_err()
+            .to_string()
+            .contains("mismatch"));
+    }
+
+    /// Verifies that [`FileCacheWriter::create`] makes parent directories.
+    #[test]
+    fn test_file_cache_writer_create() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("a/b/cache.bin");
+        let writer = FileCacheWriter::create(&nested).unwrap();
+        assert!(nested.exists());
+        let meta = std::fs::metadata(&nested).unwrap();
+        assert!(meta.is_file());
+
+        writer.preallocate(64).unwrap();
+        assert_eq!(std::fs::metadata(&nested).unwrap().len(), 64);
+    }
+
+    /// Verifies that [`FileCacheWriter`] can write blocks and read them back.
+    #[test]
+    fn test_file_cache_writer_write_and_read_back() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("cache.bin");
+        let writer = FileCacheWriter::create(&path).unwrap();
+
+        let data = b"0123456789abcdef0123456789abcdef";
+        writer.write_block(0, data).unwrap();
+        writer.write_block(32, data).unwrap();
+
+        let read_back = std::fs::read(&path).unwrap();
+        assert_eq!(read_back.len(), 64);
+        assert_eq!(&read_back[..32], &data[..]);
+        assert_eq!(&read_back[32..], &data[..]);
     }
 }

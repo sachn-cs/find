@@ -90,21 +90,23 @@ The CLI is stateful: it writes checkpoints to `data/checkpoint.json` after each 
 
 ## Testing Strategy
 
-28 tests across unit, integration, and audit suites:
+60+ tests across unit, integration, orchestrator, and audit suites:
 
-- **Unit tests** (`src/ecc.rs`, `src/search.rs`): Algebraic invariants, edge cases, empty inputs, identity point handling, cache corruption detection
-- **Integration tests** (`tests/integration.rs`): Randomized 6-8 digit scalars, boundary values, palindromic/repeating patterns, proptest property-based coverage, idempotency verification
-- **Audit tests** (`tests/audit.rs`): Rigorous end-to-end key recovery for known scalars (1234567890, 7, 100, 1000, 99999), 8-phase verification including cryptographic proof that recovered scalars reproduce the target public key
+- **Unit tests** (`src/ecc.rs`, `src/search.rs`, `src/error.rs`, `src/persistence.rs`): Algebraic invariants, edge cases, empty inputs, identity point handling, cache corruption detection, error formatting, checkpoint integrity
+- **Integration tests** (`tests/integration.rs`): Randomized 6–8 digit scalars, boundary values, palindromic/repeating patterns, proptest property-based coverage, idempotency verification
+- **Audit tests** (`tests/audit.rs`): Rigorous end-to-end key recovery for known scalars (1234567890, 7, 100, 1000, 99999), cryptographic proof that recovered scalars reproduce the target public key
+- **Orchestrator tests** (`tests/orchestrator.rs`): End-to-end session flow, checkpoint resume, malformed pubkey rejection
 
 See [TESTING.md](TESTING.md) for the full verification strategy.
 
 ## Build
 
 ```bash
-make build    # Release binary (opt-level=3, lto=fat, panic=abort)
-make test     # All 28 tests + doctests
-make lint     # clippy + fmt check
-make bench    # criterion microbenchmarks
+make build     # Release binary (opt-level=3, lto=fat, panic=abort)
+make test      # All tests + doctests
+make lint      # clippy + fmt check
+make bench     # criterion microbenchmarks
+make coverage  # HTML coverage report via cargo-tarpaulin
 ```
 
 **Release profile** (`Cargo.toml`):
@@ -135,6 +137,14 @@ Rayon is configured with a global panic handler that logs worker thread panics r
 | `tracing` | 0.1 | Structured logging |
 | `clap` | 4.4 | CLI argument parsing |
 | `thiserror` | 1.0 | Error enum derivation |
+
+## Security
+
+Please see [SECURITY.md](SECURITY.md) for our vulnerability disclosure policy and supported versions.
+
+## Contributing
+
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) and open a pull request using the provided template.
 
 ---
 

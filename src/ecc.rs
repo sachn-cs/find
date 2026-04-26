@@ -232,6 +232,67 @@ mod tests {
         );
     }
 
+    /// Verifies that invalid hex is rejected by [`parse_pubkey`].
+    #[test]
+    fn test_parse_pubkey_invalid_hex() {
+        let res = parse_pubkey("zzzz");
+        assert!(res.is_err(), "Invalid hex must be rejected");
+        assert!(res.unwrap_err().to_string().contains("Hex"));
+    }
+
+    /// Verifies that a malformed SEC1 prefix is rejected.
+    #[test]
+    fn test_parse_pubkey_malformed_sec1() {
+        let res = parse_pubkey("04abcd");
+        assert!(
+            res.is_err(),
+            "Malformed SEC1 key must be rejected: {:?}",
+            res.ok()
+        );
+    }
+
+    /// Verifies that invalid hex is rejected by [`hex_to_scalar`].
+    #[test]
+    fn test_hex_to_scalar_invalid_hex() {
+        let res = hex_to_scalar("0g");
+        assert!(res.is_err(), "Invalid hex must be rejected");
+    }
+
+    /// Verifies that a scalar equal to the curve order is rejected.
+    #[test]
+    fn test_hex_to_scalar_overflow() {
+        let n_hex = "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141";
+        let res = hex_to_scalar(n_hex);
+        assert!(res.is_err(), "Scalar equal to curve order must be rejected");
+        assert!(res.unwrap_err().to_string().contains("exceeds curve order"));
+    }
+
+    /// Verifies that long hex strings are truncated to the least-significant 32 bytes.
+    #[test]
+    fn test_hex_to_scalar_long_input() {
+        let long = "0001fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141";
+        let res = hex_to_scalar(long);
+        assert!(res.is_ok(), "Long hex should be truncated, not rejected");
+    }
+
+    /// Verifies that the generator point matches the expected base point.
+    #[test]
+    fn test_generator_is_base_point() {
+        let g = generator();
+        assert_eq!(g, ProjectivePoint::GENERATOR);
+    }
+
+    /// Verifies that [`to_hex_x`] round-trips for a non-identity point.
+    #[test]
+    fn test_to_hex_x_roundtrip() {
+        let p = scalar_mul_g(&Scalar::from(42u64));
+        let x_hex = to_hex_x(&p);
+        assert_eq!(x_hex.len(), 64);
+        let bytes = hex::decode(&x_hex).unwrap();
+        assert_eq!(bytes.len(), 32);
+        assert!(bytes.iter().any(|&b| b != 0));
+    }
+
     /// Property-based verification for ECC subtraction invariants.
     #[cfg(test)]
     mod prop_tests {
