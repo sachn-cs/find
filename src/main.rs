@@ -76,9 +76,12 @@ fn main() -> anyhow::Result<()> {
 ///
 /// The returned guard must remain alive for the duration of the program to
 /// ensure that buffered log events are flushed before exit.
-fn init_tracing(
-    log_dir: &str,
-) -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard> {
+///
+/// # Panics
+///
+/// Panics if the subscriber has already been initialized (e.g. by a previous
+/// call in the same process). In test code prefer `tracing::subscriber::with_default`.
+fn init_tracing(log_dir: &str) -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard> {
     let file_appender = tracing_appender::rolling::daily(log_dir, "find.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
@@ -110,4 +113,51 @@ fn render_success_report(m: find::search::SearchMatch, total_time: std::time::Du
     }
     println!("Total Search Duration: {:?}", total_time);
     println!("{}", "=".repeat(60));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that [`Args`] parses with minimal required arguments.
+    #[test]
+    fn test_args_parse_minimal() {
+        let args = Args::parse_from(["find", "--pubkey", "abc"]);
+        assert_eq!(args.pubkey, "abc");
+        assert_eq!(args.output_dir, "data");
+        assert_eq!(args.log_dir, "logs");
+        assert!(!args.cache_points);
+    }
+
+    /// Verifies that [`Args`] parses with all flags set.
+    #[test]
+    fn test_args_parse_full() {
+        let args = Args::parse_from([
+            "find",
+            "--pubkey",
+            "deadbeef",
+            "--output-dir",
+            "/tmp/out",
+            "--log-dir",
+            "/tmp/log",
+            "--cache-points",
+        ]);
+        assert_eq!(args.pubkey, "deadbeef");
+        assert_eq!(args.output_dir, "/tmp/out");
+        assert_eq!(args.log_dir, "/tmp/log");
+        assert!(args.cache_points);
+    }
+
+    /// Verifies that [`render_success_report`] formats a match without panicking.
+    #[test]
+    fn test_render_success_report() {
+        let m = find::search::SearchMatch {
+            label: "2^10".to_string(),
+            offset: "1024".to_string(),
+            small_scalar: 42,
+            candidates: vec!["1066".to_string(), "982".to_string()],
+        };
+        // The function writes to stdout; we just verify it doesn't panic.
+        render_success_report(m, std::time::Duration::from_secs(5));
+    }
 }

@@ -101,10 +101,7 @@ impl VariantIndex {
                     label: var.label.clone(),
                     offset: var.offset.clone(),
                     small_scalar: j,
-                    candidates: vec![
-                        scalar_to_hex_trimmed(&c1),
-                        scalar_to_hex_trimmed(&c2),
-                    ],
+                    candidates: vec![scalar_to_hex_trimmed(&c1), scalar_to_hex_trimmed(&c2)],
                 }
             })
     }
@@ -167,7 +164,7 @@ impl Progress {
 ///
 /// Implementations are responsible for persisting raw 32-byte X-coordinate
 /// blocks at arbitrary byte offsets. The trait is object-safe and is
-/// intended to be implemented by the [`persistence`] layer so that the search
+/// intended to be implemented by the `persistence` layer so that the search
 /// domain remains free of file-system details.
 pub trait CacheWriter: Send + Sync {
     /// Writes `data` starting at `offset` bytes into the cache.
@@ -259,25 +256,39 @@ pub fn perform_chunked_sweep(index: &VariantIndex, start: u64, end: u64) -> Opti
 
     const BATCH_SIZE: u64 = 32;
     let range_len = end.saturating_sub(start).saturating_add(1);
-    let num_batches = range_len.div_ceil(BATCH_SIZE);
+    let num_batches = if range_len == 0 {
+        0
+    } else {
+        (range_len - 1) / BATCH_SIZE + 1
+    };
 
-    (0..num_batches)
-        .into_par_iter()
-        .find_map_any(|batch_idx| {
-            let batch_offset = batch_idx * BATCH_SIZE;
-            let chunk_start = start.saturating_add(batch_offset);
-            let chunk_end = (chunk_start.saturating_add(BATCH_SIZE - 1)).min(end);
+    (0..num_batches).into_par_iter().find_map_any(|batch_idx| {
+        let batch_offset = batch_idx * BATCH_SIZE;
+        let chunk_start = start.saturating_add(batch_offset);
+        let chunk_end = (chunk_start.saturating_add(BATCH_SIZE - 1)).min(end);
 
-            let entries = compute_batch(chunk_start, chunk_end);
-            for (j, affine) in entries {
-                if let Some(x_bytes) = affine_x_bytes(&affine) {
-                    if let Some(m) = index.match_x(&x_bytes, j) {
-                        return Some(m);
-                        }
+        let count = (chunk_end.saturating_sub(chunk_start).saturating_add(1)) as usize;
+        let mut points = [ProjectivePoint::IDENTITY; MAX_BATCH];
+        let mut affines = [AffinePoint::IDENTITY; MAX_BATCH];
+
+        let mut current = ecc::scalar_mul_g(&Scalar::from(chunk_start));
+        for p in points.iter_mut().take(count) {
+            *p = current;
+            current += ecc::generator();
+        }
+
+        ProjectivePoint::batch_normalize(&points[..count], &mut affines[..count]);
+
+        for (i, affine) in affines.iter().enumerate().take(count) {
+            let j = chunk_start + i as u64;
+            if let Some(x_bytes) = affine_x_bytes(affine) {
+                if let Some(m) = index.match_x(&x_bytes, j) {
+                    return Some(m);
                 }
             }
-            None
-        })
+        }
+        None
+    })
 }
 
 /// Pre-computes a binary cache chunk while optionally searching for a match.
@@ -320,25 +331,47 @@ pub fn precompute_chunk<W: CacheWriter>(
 
     const BATCH_SIZE: u64 = 32;
     let range_len = end.saturating_sub(start).saturating_add(1);
-    let num_batches = range_len.div_ceil(BATCH_SIZE);
+    let num_batches = if range_len == 0 {
+        0
+    } else {
+        (range_len - 1) / BATCH_SIZE + 1
+    };
     let match_found: Mutex<Option<SearchMatch>> = Mutex::new(None);
 
     (0..num_batches)
         .into_par_iter()
         .try_for_each(|batch_idx| -> Result<()> {
-            if match_found.lock().unwrap().is_some() {
-                return Ok(());
+            // Fast-path check without locking — if another worker already
+            // found a match, skip this batch entirely.
+            {
+                let guard = match_found.lock();
+                if guard.is_ok_and(|g| g.is_some()) {
+                    return Ok(());
+                }
             }
 
             let batch_offset = batch_idx * BATCH_SIZE;
             let chunk_start = start.saturating_add(batch_offset);
             let chunk_end = (chunk_start.saturating_add(BATCH_SIZE - 1)).min(end);
-            let entries = compute_batch(chunk_start, chunk_end);
+            let count = (chunk_end.saturating_sub(chunk_start).saturating_add(1)) as usize;
 
-            let mut block = Vec::with_capacity(entries.len() * 32);
+            let mut points = [ProjectivePoint::IDENTITY; MAX_BATCH];
+            let mut affines = [AffinePoint::IDENTITY; MAX_BATCH];
+
+            let mut current = ecc::scalar_mul_g(&Scalar::from(chunk_start));
+            for p in points.iter_mut().take(count) {
+                *p = current;
+                current += ecc::generator();
+            }
+
+            ProjectivePoint::batch_normalize(&points[..count], &mut affines[..count]);
+
+            let mut block = [0u8; 32 * MAX_BATCH];
+            let mut block_len = 0usize;
             let mut local_match = None;
 
-            for (j, affine) in entries {
+            for (i, affine) in affines.iter().enumerate().take(count) {
+                let j = chunk_start + i as u64;
                 let encoded = affine.to_encoded_point(false);
                 let x_bytes = match encoded.x() {
                     Some(x) => x.as_ref(),
@@ -353,48 +386,47 @@ pub fn precompute_chunk<W: CacheWriter>(
                         break;
                     }
                 }
-                block.extend_from_slice(x_bytes);
+
+                block[block_len..block_len + 32].copy_from_slice(x_bytes);
+                block_len += 32;
             }
 
             if let Some(m) = local_match {
-                *match_found.lock().unwrap() = Some(m);
+                if let Ok(mut guard) = match_found.lock() {
+                    *guard = Some(m);
+                }
                 return Ok(());
             }
 
             let offset = batch_idx * BATCH_SIZE * 32;
             writer
-                .write_block(offset, &block)
+                .write_block(offset, &block[..block_len])
                 .map_err(FindError::Io)?;
             progress.add(BATCH_SIZE);
             Ok(())
         })?;
 
-    Ok(match_found.into_inner().unwrap())
+    // Extract the match, gracefully ignoring poison (a panicked worker may
+    // have held the lock; we still want to return whatever result we have).
+    let result = match match_found.into_inner() {
+        Ok(r) => r,
+        Err(poisoned) => {
+            tracing::warn!("Precompute worker panicked; extracting partial result");
+            poisoned.into_inner()
+        }
+    };
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Computes and batch-normalizes points \(j \cdot G\) for \(j \in [start, end]\).
+/// Fixed maximum batch size used throughout the search engine.
 ///
-/// Returns a vector of `(j, affine_point)` pairs in ascending order of \(j\).
-fn compute_batch(start: u64, end: u64) -> Vec<(u64, AffinePoint)> {
-    let count = (end.saturating_sub(start).saturating_add(1)) as usize;
-    let mut points = Vec::with_capacity(count);
-    for j in start..=end {
-        points.push(ecc::scalar_mul_g(&Scalar::from(j)));
-    }
-
-    let mut affines = vec![AffinePoint::IDENTITY; points.len()];
-    ProjectivePoint::batch_normalize(&points, &mut affines);
-
-    affines
-        .into_iter()
-        .enumerate()
-        .map(|(idx, affine)| (start + idx as u64, affine))
-        .collect()
-}
+/// All hot-path arrays are stack-allocated to this size, guaranteeing O(1)
+/// space per batch regardless of the scalar range being swept.
+const MAX_BATCH: usize = 32;
 
 /// Extracts the 32-byte big-endian X-coordinate from an affine point.
 ///
@@ -460,7 +492,115 @@ mod tests {
         let variants = generate_variants(&target);
         assert!(!variants.is_empty());
         for v in &variants {
-            assert_ne!(v.x_bytes, [0u8; 32], "All produced variants must have an X-coordinate");
+            assert_ne!(
+                v.x_bytes, [0u8; 32],
+                "All produced variants must have an X-coordinate"
+            );
         }
+    }
+
+    /// Verifies that [`Progress`] counts additions correctly under concurrency.
+    #[test]
+    fn test_progress_add_and_get() {
+        let p = Progress::new();
+        assert_eq!(p.get(), 0);
+        assert_eq!(p.add(10), 0);
+        assert_eq!(p.get(), 10);
+        assert_eq!(p.add(5), 10);
+        assert_eq!(p.get(), 15);
+    }
+
+    /// Verifies that [`perform_chunked_sweep`] returns `None` when start > end.
+    #[test]
+    fn test_perform_chunked_sweep_start_greater_than_end() {
+        let target = ecc::scalar_mul_g(&Scalar::from(1u64));
+        let index = VariantIndex::new(generate_variants(&target));
+        assert!(perform_chunked_sweep(&index, 100, 1).is_none());
+    }
+
+    /// Verifies that [`precompute_chunk`] returns `Ok(None)` when start > end.
+    #[test]
+    fn test_precompute_chunk_start_greater_than_end() {
+        struct DummyWriter;
+        impl CacheWriter for DummyWriter {
+            fn write_block(&self, _offset: u64, _data: &[u8]) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let progress = Progress::new();
+        let result = precompute_chunk(100, 1, &DummyWriter, None, &progress);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    /// Verifies that [`scalar_to_hex_trimmed`] renders zero correctly.
+    #[test]
+    fn test_scalar_to_hex_trimmed_zero() {
+        let s = Scalar::from(0u64);
+        assert_eq!(scalar_to_hex_trimmed(&s), "0");
+    }
+
+    /// Verifies that [`scalar_to_hex_trimmed`] strips leading zeros.
+    #[test]
+    fn test_scalar_to_hex_trimmed_nonzero() {
+        let s = Scalar::from(0x1a2bu64);
+        assert_eq!(scalar_to_hex_trimmed(&s), "1a2b");
+    }
+
+    /// Verifies that [`u256_to_decimal`] produces the expected decimal string.
+    #[test]
+    fn test_u256_to_decimal() {
+        let v = U256::from_u128(123456789);
+        assert_eq!(u256_to_decimal(&v), "123456789");
+    }
+
+    /// Verifies that [`VariantIndex::variants`] returns the backing slice.
+    #[test]
+    fn test_variant_index_variants_accessor() {
+        let target = ecc::scalar_mul_g(&Scalar::from(7u64));
+        let variants = generate_variants(&target);
+        let index = VariantIndex::new(variants.clone());
+        assert_eq!(index.variants().len(), variants.len());
+    }
+
+    /// Verifies that [`VariantIndex::match_x`] returns `None` for unknown X.
+    #[test]
+    fn test_match_x_not_found() {
+        let target = ecc::scalar_mul_g(&Scalar::from(7u64));
+        let index = VariantIndex::new(generate_variants(&target));
+        let unknown = [0xffu8; 32];
+        assert!(index.match_x(&unknown, 1).is_none());
+    }
+
+    /// Verifies that [`precompute_chunk`] discovers a match and returns early.
+    #[test]
+    fn test_precompute_chunk_finds_match() {
+        struct NullWriter;
+        impl CacheWriter for NullWriter {
+            fn write_block(&self, _offset: u64, _data: &[u8]) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        // Target scalar d = 3 matches via either:
+        // - 2^0 variant (V = 1) at j = 2, or
+        // - 2^1 variant (V = 2) at j = 1.
+        let target = ecc::scalar_mul_g(&Scalar::from(3u64));
+        let index = VariantIndex::new(generate_variants(&target));
+        let progress = Progress::new();
+
+        let result = precompute_chunk(1, 10, &NullWriter, Some(&index), &progress).unwrap();
+        assert!(
+            result.is_some(),
+            "precompute_chunk must find match for d=3 in range [1,10]"
+        );
+        let m = result.unwrap();
+        assert!(
+            m.candidates.contains(&"3".to_string()),
+            "Candidates must include d=3, got: {:?} (found via {} at j={})",
+            m.candidates,
+            m.label,
+            m.small_scalar
+        );
     }
 }

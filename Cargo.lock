@@ -452,6 +452,7 @@ dependencies = [
  "criterion",
  "hex",
  "k256",
+ "libc",
  "num-bigint",
  "num-traits",
  "proptest",

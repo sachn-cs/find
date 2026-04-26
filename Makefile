@@ -20,7 +20,11 @@ bench:
 # Perform static analysis and formatting
 lint:
 	cargo fmt --all -- --check
-	cargo clippy --workspace -- -D warnings
+	cargo clippy --all-targets --all-features -- -D warnings
+
+# Generate code coverage report
+coverage:
+	cargo tarpaulin --all-targets --all-features --out html --timeout 600
 
 # Generate documentation
 doc:

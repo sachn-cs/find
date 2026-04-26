@@ -61,5 +61,133 @@ pub enum FindError {
     CacheCorrupted(String),
 }
 
+impl Clone for FindError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::EccError(s) => Self::EccError(s.clone()),
+            Self::ResearchIntegrityError(s) => Self::ResearchIntegrityError(s.clone()),
+            Self::InvalidPublicKey(s) => Self::InvalidPublicKey(s.clone()),
+            Self::Io(e) => Self::Io(std::io::Error::new(e.kind(), e.to_string())),
+            Self::HexError(e) => Self::HexError(*e),
+            Self::SerializationError(e) => Self::SerializationError(serde_json::Error::io(
+                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+            )),
+            Self::CacheCorrupted(s) => Self::CacheCorrupted(s.clone()),
+        }
+    }
+}
+
+impl PartialEq for FindError {
+    fn eq(&self, other: &Self) -> bool {
+        use std::mem::discriminant;
+        if discriminant(self) != discriminant(other) {
+            return false;
+        }
+        self.to_string() == other.to_string()
+    }
+}
+
 /// Convenience alias for [`std::result::Result`] parameterized with [`FindError`].
 pub type Result<T> = std::result::Result<T, FindError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that every [`FindError`] variant formats its message correctly.
+    #[test]
+    fn test_error_display_variants() {
+        assert_eq!(
+            FindError::EccError("scalar overflow".to_string()).to_string(),
+            "ECC error: scalar overflow"
+        );
+        assert_eq!(
+            FindError::ResearchIntegrityError("mismatch".to_string()).to_string(),
+            "Research integrity violation: mismatch"
+        );
+        assert_eq!(
+            FindError::InvalidPublicKey("bad prefix".to_string()).to_string(),
+            "Invalid public key format: bad prefix"
+        );
+        assert_eq!(
+            FindError::Io(std::io::Error::new(std::io::ErrorKind::Other, "disk full")).to_string(),
+            "I/O error: disk full"
+        );
+        assert_eq!(
+            FindError::HexError(hex::FromHexError::OddLength).to_string(),
+            "Hex decoding error: Odd number of digits"
+        );
+        let serde_msg =
+            FindError::SerializationError(serde_json::from_str::<i32>("not_json").unwrap_err())
+                .to_string();
+        assert!(serde_msg.starts_with("Serialization error: expected"));
+        assert!(serde_msg.contains("line 1"));
+        assert_eq!(
+            FindError::CacheCorrupted("bad header".to_string()).to_string(),
+            "Cache file corrupted: bad header"
+        );
+    }
+
+    /// Verifies that [`std::io::Error`] converts into [`FindError::Io`].
+    #[test]
+    fn test_from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
+        let find_err: FindError = io_err.into();
+        assert!(matches!(find_err, FindError::Io(_)));
+        assert!(find_err.to_string().contains("missing"));
+    }
+
+    /// Verifies that [`hex::FromHexError`] converts into [`FindError::HexError`].
+    #[test]
+    fn test_from_hex_error() {
+        let hex_err = hex::decode("0z").unwrap_err();
+        let find_err: FindError = hex_err.into();
+        assert!(matches!(find_err, FindError::HexError(_)));
+    }
+
+    /// Verifies that [`serde_json::Error`] converts into [`FindError::SerializationError`].
+    #[test]
+    fn test_from_serde_error() {
+        let serde_err = serde_json::from_str::<i32>("{bad}").unwrap_err();
+        let find_err: FindError = serde_err.into();
+        assert!(matches!(find_err, FindError::SerializationError(_)));
+    }
+
+    /// Verifies that the [`Result`] alias can be used in function signatures.
+    #[test]
+    fn test_result_alias_ok() -> Result<()> {
+        Ok(())
+    }
+
+    /// Verifies that the [`Result`] alias propagates errors.
+    #[test]
+    fn test_result_alias_err() {
+        fn inner() -> Result<()> {
+            Err(FindError::EccError("fail".to_string()))
+        }
+        assert!(inner().is_err());
+    }
+
+    /// Verifies that [`FindError`] implements [`Clone`].
+    #[test]
+    fn test_error_clone() {
+        let e1 = FindError::EccError("x".to_string());
+        let e2 = e1.clone();
+        assert_eq!(e1, e2);
+
+        let e3 = FindError::Io(std::io::Error::new(std::io::ErrorKind::Other, "y"));
+        let e4 = e3.clone();
+        assert_eq!(e3, e4);
+    }
+
+    /// Verifies that [`FindError`] implements [`PartialEq`].
+    #[test]
+    fn test_error_partial_eq() {
+        let a = FindError::CacheCorrupted("z".to_string());
+        let b = FindError::CacheCorrupted("z".to_string());
+        let c = FindError::CacheCorrupted("w".to_string());
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, FindError::EccError("z".to_string()));
+    }
+}

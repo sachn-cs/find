@@ -39,7 +39,7 @@ We explicitly test known cryptographic and logic boundaries:
 
 ### 5. High-Precision Benchmarking (Performance Verification)
 
-With the introduction of Batch Normalization in v2.0.0, performance is now a verified pillar. We use `criterion` to validate:
+With the introduction of batch normalization, performance is now a verified pillar. We use `criterion` to validate:
 - **Normalization Amortization:** Ensures simultaneous inversion remains efficient.
 - **Index Latency:** Monitors binary search performance over the flat array.
 - **Regression Tracking:** Validates that new commits do not degrade cryptographic throughput.
@@ -57,9 +57,23 @@ make bench
 
 # Static analysis and linting
 make lint
+
+# Code coverage report (HTML)
+make coverage
 ```
 
 To run property-tests with increased case counts:
 ```bash
 PROPTEST_CASES=1000 cargo test --release
 ```
+
+### Continuous Integration
+
+All changes are validated through GitHub Actions on Ubuntu, macOS, and Windows with the following checks:
+
+- `cargo fmt --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test --all-targets --all-features`
+- `cargo doc --no-deps --all-features` (with `RUSTDOCFLAGS="-D warnings"`)
+- `cargo audit` for security advisories
+- `cargo tarpaulin` for code coverage tracking

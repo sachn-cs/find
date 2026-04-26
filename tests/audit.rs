@@ -84,7 +84,7 @@ fn test_rigorous_recovery_1234567890() {
 
 /// Pads a hex string to even length for [`hex::decode`] compatibility.
 fn pad_hex(h: &str) -> String {
-    if !h.len().is_multiple_of(2) {
+    if h.len() % 2 != 0 {
         format!("0{}", h)
     } else {
         h.to_string()
@@ -102,21 +102,19 @@ fn test_recovery_small_scalars() {
 
     for known_d in test_cases {
         let d_hex = BigUint::from(known_d).to_str_radix(16);
-        let target_p = ecc::scalar_mul_g(
-            &ecc::hex_to_scalar(&pad_hex(&d_hex)).unwrap()
-        );
+        let target_p = ecc::scalar_mul_g(&ecc::hex_to_scalar(&pad_hex(&d_hex)).unwrap());
         let index = VariantIndex::new(search::generate_variants(&target_p));
 
         let sweep_end = known_d + 10;
-        let result = search::perform_chunked_sweep(&index, 0, sweep_end
-        );
+        let result = search::perform_chunked_sweep(&index, 0, sweep_end);
 
         let m = result.unwrap_or_else(|| panic!("Sweep MUST recover match for d={}", known_d));
 
         assert!(
             m.candidates.contains(&d_hex),
             "Candidates for d={} must contain the original scalar (hex: {})",
-            known_d, d_hex
+            known_d,
+            d_hex
         );
 
         let recovered = ecc::hex_to_scalar(&pad_hex(&d_hex)).unwrap();

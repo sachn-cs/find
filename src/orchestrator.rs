@@ -24,6 +24,12 @@ const CACHE_CHUNK_SIZE: u64 = 1_000_000_000;
 /// Theoretical maximum search boundary for 64-bit scalars.
 const MAX_SEARCH: u64 = u64::MAX;
 
+/// Minimum non-zero search scalar.
+///
+/// \(j = 0\) yields the identity point, which cannot match a valid variant
+/// because every variant is guaranteed to have a non-zero X-coordinate.
+const MIN_J: u64 = 1;
+
 /// Configuration required to drive a search session.
 ///
 /// All fields are owned strings so that the configuration can outlive the
@@ -40,9 +46,25 @@ pub struct Config {
     pub cache_points: bool,
 }
 
+impl Config {
+    /// Validates that all required fields are non-empty and well-formed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FindError::InvalidPublicKey`] if the pubkey string is empty.
+    pub fn validate(&self) -> Result<()> {
+        if self.pubkey.trim().is_empty() {
+            return Err(FindError::InvalidPublicKey(
+                "Public key cannot be empty".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Runs a complete search session.
 ///
-/// The session proceeds in chunks of [`CACHE_CHUNK_SIZE`] scalars. For each
+/// The session proceeds in chunks of `CACHE_CHUNK_SIZE` scalars. For each
 /// chunk the orchestrator:
 ///
 /// 1. Checks whether a binary cache already exists.
@@ -70,6 +92,8 @@ pub struct Config {
 ///
 /// Returns [`FindError::Io`] on checkpoint or cache I/O failures.
 pub fn run(config: &Config) -> Result<Option<SearchMatch>> {
+    config.validate()?;
+
     let target_p = ecc::parse_pubkey(&config.pubkey)?;
     let variants = search::generate_variants(&target_p);
     persistence::save_variants_to_json(&variants, &config.output_dir)?;
@@ -79,7 +103,7 @@ pub fn run(config: &Config) -> Result<Option<SearchMatch>> {
     std::fs::create_dir_all(&checkpoints_dir).map_err(FindError::Io)?;
 
     let checkpoint_file = Path::new(&config.output_dir).join("checkpoint.json");
-    let mut current_j: u64 = 0;
+    let mut current_j: u64;
 
     match persistence::Checkpoint::load(&checkpoint_file) {
         Ok(cp) if cp.pubkey == config.pubkey => {
@@ -89,50 +113,53 @@ pub fn run(config: &Config) -> Result<Option<SearchMatch>> {
         }
         Ok(_) => {
             warn!("Checkpoint pubkey mismatch. Starting fresh.");
+            current_j = 0;
         }
         Err(e) => {
             warn!("No valid checkpoint: {}. Starting fresh.", e);
+            current_j = 0;
         }
     }
 
     let progress = Progress::new();
 
     loop {
-        let chunk_start = current_j.saturating_add(1);
+        let chunk_start = current_j.saturating_add(1).max(MIN_J);
+        // Detect overflow: if current_j + CACHE_CHUNK_SIZE wraps, chunk_end
+        // will be less than current_j, meaning we've exhausted the space.
         let chunk_end = current_j.saturating_add(CACHE_CHUNK_SIZE);
+        if chunk_end < current_j {
+            info!("Search space exhausted (overflow detected).");
+            break;
+        }
+
         let cache_path = checkpoints_dir.join(format!("chunk_{}.bin", chunk_start));
 
-        info!("--- STARTING SEGMENT [{} ... {}] ---", chunk_start, chunk_end);
+        info!(
+            "--- STARTING SEGMENT [{} ... {}] ---",
+            chunk_start, chunk_end
+        );
 
         let sweep_result = if cache_path.exists() {
             info!("Cache hit: {}", cache_path.display());
-            persistence::perform_cached_sweep(&index, &cache_path, chunk_start
-            )?
+            persistence::perform_cached_sweep(&index, &cache_path, chunk_start)?
         } else if config.cache_points {
             info!("Cache miss. Precomputing chunk...");
             let writer = persistence::FileCacheWriter::create(&cache_path)?;
             let expected_len = (chunk_end.saturating_sub(chunk_start).saturating_add(1)) * 32;
             writer.preallocate(expected_len)?;
 
-            let early = search::precompute_chunk(
-                chunk_start,
-                chunk_end,
-                &writer,
-                Some(&index),
-                &progress,
-            )?;
+            let early =
+                search::precompute_chunk(chunk_start, chunk_end, &writer, Some(&index), &progress)?;
 
             if early.is_some() {
                 early
             } else {
-                persistence::perform_cached_sweep(
-                    &index, &cache_path, chunk_start
-                )?
+                persistence::perform_cached_sweep(&index, &cache_path, chunk_start)?
             }
         } else {
             info!("Cache miss. Running parallel sweep...");
-            search::perform_chunked_sweep(&index, chunk_start, chunk_end
-            )
+            search::perform_chunked_sweep(&index, chunk_start, chunk_end)
         };
 
         if let Some(m) = sweep_result {
@@ -152,7 +179,7 @@ pub fn run(config: &Config) -> Result<Option<SearchMatch>> {
         }
         .save_atomic(&checkpoint_file)?;
 
-        if current_j > 0 && current_j.is_multiple_of(32 * TRILLION) {
+        if current_j > 0 && current_j % (32 * TRILLION) == 0 {
             info!("Audit boundary: 32 trillion steps reached.");
         }
 
