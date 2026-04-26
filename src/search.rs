@@ -64,7 +64,7 @@ impl VariantIndex {
         for (i, var) in variants.iter().enumerate() {
             entries.push((var.x_bytes, i));
         }
-        entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        entries.sort_unstable_by_key(|a| a.0);
 
         Self {
             sorted_entries: entries,
