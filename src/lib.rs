@@ -7,18 +7,22 @@
 //! A high-performance Rust implementation of a multi-variant range-splitting
 //! algorithm for secp256k1 private key discovery.
 //!
-//! The crate is organized into four layers:
+//! The crate is organized into six layers:
 //!
 //! - [`ecc`] — Low-level elliptic-curve primitives (SEC1 parsing, scalar multiplication).
 //! - [`search`] — Pure domain logic for variant generation and parallel sweeps.
 //! - [`persistence`] — Atomic checkpoints, binary caches, and JSON exports.
+//! - [`config`] — Session configuration types and validation.
+//! - [`telemetry`] — Tracing initialization helpers.
 //! - [`orchestrator`] — High-level session orchestration that wires the layers together.
 //! - [`error`] — Unified error type used across all layers.
 
 #![warn(missing_docs)]
 
+pub mod config;
 pub mod ecc;
 pub mod error;
 pub mod orchestrator;
 pub mod persistence;
 pub mod search;
+pub mod telemetry;

@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub Sponsors funding configuration
 - Restructured documentation under `docs/` with single source of truth: overview, architecture, algorithms, modules, CLI, configuration, observability, performance, benchmarks, testing, deployment, operations, troubleshooting, security, FAQ, glossary, references, roadmap, maintenance, and ADR directory
 - Six Architecture Decision Records (ADRs) capturing major design choices: multi-variant search, batch normalization, atomic checkpointing, error hierarchy, pure search module, binary cache format
+- Hardening pass (2026-06-26):
+  - **New modules**: `config` (session configuration), `telemetry` (tracing initialization)
+  - **New public APIs**: `Config::new`, `SweepRange`, `SearchMatch::new`, `SearchMatch::candidates_as_scalars`, `ecc::is_identity`, `ecc::x_bytes`, `search::BATCH_SIZE`, `search::VARIANT_COUNT`
+  - **`#[non_exhaustive]`** on `FindError` and `SearchMatch` for future-proof semver
+  - **New tests**: KAT (`tests/kat.rs`), differential (`tests/differential.rs` against `libsecp256k1`), 7 new unit tests, 4 new property tests
+  - **Fuzz targets**: `parse_pubkey`, `hex_to_scalar`, `scalar_mul_g` (3 targets via cargo-fuzz)
+  - **New ADRs**: 0007 (Y-parity ambiguity), 0008 (mutex poisoning policy)
+  - **`secp256k1-sys`** as a dev-dependency for cross-implementation verification
 
 ### Changed
 - Enhanced README with improved structure, badges, and roadmap
@@ -23,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved .gitignore with comprehensive coverage for IDEs, OS files, and project artifacts
 - Consolidated duplicated content: merged `ARCHITECTURE.md` and `docs/architecture.md` into a single `docs/architecture.md`; moved `ALGORITHMS.md`, `TESTING.md`, and `RELEASE.md` into `docs/`
 - Replaced ASCII diagrams with Mermaid diagrams in architecture documentation
+- Hardening pass (2026-06-26):
+  - Extracted `Config` and related constants from `orchestrator.rs` to `config.rs`
+  - Extracted `init_tracing` and `install_rayon_panic_handler` from `main.rs` to `telemetry.rs`
+  - `progress.add(BATCH_SIZE)` → `progress.add(count as u64)` in `search.rs` to fix progress overshoot
+  - `Mutex::lock().unwrap()` → `lock().expect("...")` in `persistence.rs` for clearer error messages
+  - `init_tracing` now creates the log directory if it does not exist
 
 ### Fixed
 - Repository metadata consistency
@@ -30,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CONTRIBUTING.md`: fixed `PROPTEST_CODE` → `PROPTEST_CASES` typo
 - `CODEOWNERS`: removed stale reference to nonexistent `OWNERS` file
 - Documentation: clarified `TRILLION` (audit boundary) vs. `CACHE_CHUNK_SIZE` (cache chunk size) distinction
+- Hardening pass (2026-06-26):
+  - `Cargo.toml` `[package.bugs]` field removed (not recognized by cargo 1.95+)
+  - `src/main.rs` `tracing_appender::fmt::layer()` typo corrected to `tracing_subscriber::fmt::layer()`
+  - Documentation drift: `MAX_BATCH` visibility, `2^0` variant deduplication claim, `unsafe` count claim
+  - Added `// SAFETY:` comment to the `libc::fsync` block in `persistence.rs`
 
 ## [1.0.0] - 2026-04-12
 

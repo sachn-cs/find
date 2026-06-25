@@ -15,7 +15,11 @@ use thiserror::Error;
 ///
 /// Variants are ordered by subsystem: ECC, integrity, parsing, I/O, format,
 /// serialization, and cache integrity.
+///
+/// This enum is `#[non_exhaustive]` to allow future variants to be added
+/// without breaking semver. External callers should match on a wildcard arm.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum FindError {
     /// An error originating from elliptic-curve arithmetic or field validation.
     ///

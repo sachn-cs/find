@@ -140,6 +140,41 @@ pub fn to_hex_x(p: &ProjectivePoint) -> String {
     hex::encode(x)
 }
 
+/// Returns `true` if the point is the point-at-infinity (the additive identity).
+///
+/// This is a constant-time comparison against `ProjectivePoint::IDENTITY`; it
+/// is suitable for use in the search hot path because it does not perform a
+/// modular inversion.
+#[inline(always)]
+pub fn is_identity(p: &ProjectivePoint) -> bool {
+    *p == ProjectivePoint::IDENTITY
+}
+
+/// Extracts the 32-byte big-endian X-coordinate of an elliptic curve point
+/// as raw bytes.
+///
+/// This operation normalizes the point from projective to affine coordinates,
+/// which involves a modular inversion and is therefore expensive. Callers
+/// should batch such extractions whenever possible.
+///
+/// # Returns
+///
+/// `Some([u8; 32])` containing the X-coordinate, or `None` if the point is
+/// the point-at-infinity (in which case the X-coordinate is undefined).
+#[inline]
+pub fn x_bytes(p: &ProjectivePoint) -> Option<[u8; 32]> {
+    if is_identity(p) {
+        return None;
+    }
+    let affine = p.to_affine();
+    let encoded = affine.to_encoded_point(false);
+    encoded.x().map(|x| {
+        let mut b = [0u8; 32];
+        b.copy_from_slice(x.as_ref());
+        b
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +361,67 @@ mod tests {
                 let res = subtract(&p, &q);
 
                 let _ = res.to_affine();
+            }
+        }
+    }
+
+    /// Tests for input-validation edge cases and hardening.
+    #[cfg(test)]
+    mod hardening_tests {
+        use super::*;
+
+        /// Verifies that a hex string whose truncated 32-byte form equals the
+        /// curve order is rejected.
+        ///
+        /// `hex_to_scalar` truncates the input to the first 32 bytes (the
+        /// high-order bytes of a big-endian encoding). A 33-byte input whose
+        /// first 32 bytes are exactly the curve order `n` must be rejected
+        /// because `n` itself is not a valid scalar (scalars are in `[0, n)`).
+        #[test]
+        fn test_hex_to_scalar_truncation_overflow() {
+            // 33 bytes: n (32 bytes) followed by 0xFF (1 extra byte).
+            // The first 32 bytes are n, so the truncated value is n itself.
+            let n_hex = "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141";
+            let long = format!("{}ff", n_hex);
+            assert_eq!(long.len(), 66); // 33 bytes
+            let res = hex_to_scalar(&long);
+            assert!(res.is_err(), "Truncation of a value >= n must be rejected");
+            assert!(
+                res.unwrap_err().to_string().contains("exceeds curve order"),
+                "Error must mention curve order"
+            );
+        }
+
+        /// Verifies that the canonical compressed pubkey of G parses correctly.
+        #[test]
+        fn test_parse_canonical_g_compressed() {
+            // Standard compressed SEC1 encoding of the secp256k1 generator.
+            let hex = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+            let p = parse_pubkey(hex).expect("canonical G must parse");
+            assert_eq!(p, generator());
+        }
+
+        /// Verifies that the canonical uncompressed pubkey of G parses correctly.
+        #[test]
+        fn test_parse_canonical_g_uncompressed() {
+            // Standard uncompressed SEC1 encoding of the secp256k1 generator.
+            let hex = "04\
+                       79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\
+                       483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8";
+            let p = parse_pubkey(hex).expect("canonical G must parse");
+            assert_eq!(p, generator());
+        }
+
+        // Property: for random non-identity points, `to_hex_x` returns 64
+        // hex characters that round-trip to 32 bytes.
+        proptest::proptest! {
+            #[test]
+            fn prop_to_hex_x_idempotent(d in 1u64..1_000_000u64) {
+                let p = scalar_mul_g(&Scalar::from(d));
+                let hex_str = to_hex_x(&p);
+                proptest::prop_assert_eq!(hex_str.len(), 64);
+                let bytes = hex::decode(&hex_str).expect("hex must decode");
+                proptest::prop_assert_eq!(bytes.len(), 32);
             }
         }
     }

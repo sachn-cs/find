@@ -81,20 +81,15 @@ All public-key parsing goes through [`src/ecc.rs::parse_pubkey`](../src/ecc.rs),
 
 ### 5. Memory safety
 
-The crate contains **no `unsafe` blocks** in any application code. All memory access is bounds-checked by the Rust compiler.
-
-```bash
-# Verify
-grep -rn "unsafe" src/  # No matches in src/ outside of generated code
-```
-
-The single `unsafe` use is the parent-directory `fsync` in [`src/persistence.rs`](../src/persistence.rs), which is necessary to call the POSIX `fsync` syscall directly:
+The crate contains **one `unsafe` block** in application code: the parent-directory `fsync` in [`src/persistence.rs`](../src/persistence.rs), which is necessary to call the POSIX `fsync` syscall directly:
 
 ```rust
 let _ = unsafe { libc::fsync(dir.as_raw_fd()) };
 ```
 
-This `unsafe` is reviewed and acceptable: it calls a C function with a valid file descriptor and ignores the return value (since failure to `fsync` the parent directory is not fatal — the worst case is a slightly less durable rename).
+This `unsafe` is reviewed and acceptable: it calls a C function with a valid file descriptor and ignores the return value (since failure to `fsync` the parent directory is not fatal — the worst case is a slightly less durable rename). A `// SAFETY:` comment documenting the validity of the file descriptor and the rationale for discarding the result accompanies the block.
+
+All other memory access is bounds-checked by the Rust compiler.
 
 ### 6. Dependency hygiene
 

@@ -8,10 +8,11 @@
 //! arguments, initializes observability, and renders results.
 
 use clap::Parser;
-use find::orchestrator::{self, Config};
+use find::config::Config;
+use find::orchestrator;
+use find::telemetry::{init_tracing, install_rayon_panic_handler};
 use std::time::Instant;
 use tracing::{info, info_span};
-use tracing_subscriber::prelude::*;
 
 /// Command-line interface for the secp256k1 find tool.
 #[derive(Parser, Debug)]
@@ -39,17 +40,7 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let _ = rayon::ThreadPoolBuilder::new()
-        .panic_handler(|info| {
-            let msg = info
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| info.downcast_ref::<String>().map(|s| s.as_str()))
-                .unwrap_or("unknown panic");
-            tracing::error!(message = %msg, "Rayon worker panicked");
-        })
-        .build_global();
-
+    install_rayon_panic_handler();
     let _guard = init_tracing(&args.log_dir)?;
 
     let main_span = info_span!("main_execution");
@@ -57,11 +48,7 @@ fn main() -> anyhow::Result<()> {
 
     info!("Initializing find tool v{}", env!("CARGO_PKG_VERSION"));
 
-    let config = Config {
-        pubkey: args.pubkey,
-        output_dir: args.output_dir,
-        cache_points: args.cache_points,
-    };
+    let config = Config::new(args.pubkey, args.output_dir, args.cache_points);
 
     let start = Instant::now();
     match orchestrator::run(&config)? {
@@ -70,35 +57,6 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Initializes tracing with a daily-rolling file appender and a stderr layer.
-///
-/// The returned guard must remain alive for the duration of the program to
-/// ensure that buffered log events are flushed before exit.
-///
-/// # Panics
-///
-/// Panics if the subscriber has already been initialized (e.g. by a previous
-/// call in the same process). In test code prefer `tracing::subscriber::with_default`.
-fn init_tracing(log_dir: &str) -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard> {
-    let file_appender = tracing_appender::rolling::daily(log_dir, "find.log");
-    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_writer(non_blocking)
-                .with_ansi(false),
-        )
-        .init();
-
-    Ok(guard)
 }
 
 /// Prints a formatted success report to stdout.
@@ -151,12 +109,12 @@ mod tests {
     /// Verifies that [`render_success_report`] formats a match without panicking.
     #[test]
     fn test_render_success_report() {
-        let m = find::search::SearchMatch {
-            label: "2^10".to_string(),
-            offset: "1024".to_string(),
-            small_scalar: 42,
-            candidates: vec!["1066".to_string(), "982".to_string()],
-        };
+        let m = find::search::SearchMatch::new(
+            "2^10",
+            "1024",
+            42,
+            vec!["1066".to_string(), "982".to_string()],
+        );
         // The function writes to stdout; we just verify it doesn't panic.
         render_success_report(m, std::time::Duration::from_secs(5));
     }

@@ -22,6 +22,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tracing::instrument;
 
+/// The fixed batch size used for batch normalization in the search engine.
+///
+/// 32 is empirically the sweet spot on x86_64 and aarch64: stack allocation
+/// cost (32 × 96 bytes ≈ 3 KB) fits in L1 cache, and the cost of 32 scalar
+/// multiplications roughly balances one batch normalization.
+///
+/// See [ADR-0002](../docs/adr/0002-batch-normalization.md) for the full
+/// rationale.
+pub const BATCH_SIZE: u64 = 32;
+
+/// The number of variants produced by [`generate_variants`].
+///
+/// The default is 512: 256 powers of two (`2^0` through `2^255`) and 256
+/// cumulative sums (`Σ 2^0..2^i` for `i ∈ [0, 255]`). One collision
+/// (`2^0 == sum(2^0..2^0)`) is preserved for completeness; the index
+/// does not deduplicate.
+pub const VARIANT_COUNT: usize = 512;
+
 /// A single search variant derived from the target public key.
 ///
 /// Each variant represents the point \(P - V \cdot G\) for a specific scalar
@@ -114,6 +132,7 @@ impl VariantIndex {
 
 /// The outcome of a successful match during a search sweep.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[non_exhaustive]
 pub struct SearchMatch {
     /// The label of the variant that matched.
     pub label: String,
@@ -123,6 +142,52 @@ pub struct SearchMatch {
     pub small_scalar: u64,
     /// Hex-encoded candidate private keys derived from \(V \pm j\).
     pub candidates: Vec<String>,
+}
+
+impl SearchMatch {
+    /// Constructs a new `SearchMatch`.
+    ///
+    /// This constructor is provided because `SearchMatch` is
+    /// `#[non_exhaustive]`, so external callers must use this function
+    /// rather than struct expression syntax.
+    pub fn new(
+        label: impl Into<String>,
+        offset: impl Into<String>,
+        small_scalar: u64,
+        candidates: Vec<String>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            offset: offset.into(),
+            small_scalar,
+            candidates,
+        }
+    }
+
+    /// Converts the hex-encoded candidates to `Scalar` values for downstream
+    /// validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FindError::EccError`] if any candidate is not a valid
+    /// secp256k1 scalar (e.g., the value exceeds the curve order `n`).
+    pub fn candidates_as_scalars(&self) -> Result<Vec<Scalar>> {
+        self.candidates
+            .iter()
+            .map(|hex_str| {
+                use k256::elliptic_curve::PrimeField;
+                let bytes = hex::decode(hex_str)
+                    .map_err(|e| FindError::EccError(format!("hex decode failed: {}", e)))?;
+                let mut fixed_bytes = [0u8; 32];
+                let len = bytes.len().min(32);
+                let src = &bytes[..len];
+                fixed_bytes[32 - src.len()..].copy_from_slice(src);
+                Option::from(Scalar::from_repr(fixed_bytes.into())).ok_or_else(|| {
+                    FindError::EccError(format!("Scalar {} exceeds curve order n", hex_str))
+                })
+            })
+            .collect()
+    }
 }
 
 /// A thread-safe progress counter for cache generation.
@@ -402,7 +467,7 @@ pub fn precompute_chunk<W: CacheWriter>(
             writer
                 .write_block(offset, &block[..block_len])
                 .map_err(FindError::Io)?;
-            progress.add(BATCH_SIZE);
+            progress.add(count as u64);
             Ok(())
         })?;
 
@@ -602,5 +667,118 @@ mod tests {
             m.label,
             m.small_scalar
         );
+    }
+
+    /// Verifies that `precompute_chunk` reports the actual batch count, not
+    /// `BATCH_SIZE`, for the last partial batch.
+    #[test]
+    fn test_precompute_chunk_progress_partial_batch() {
+        struct NullWriter;
+        impl CacheWriter for NullWriter {
+            fn write_block(&self, _offset: u64, _data: &[u8]) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        // Use a target that does NOT match in the sweep range, so all
+        // batches complete and the progress reflects the actual work.
+        let target = ecc::scalar_mul_g(&Scalar::from(1_000_000u64));
+        let index = VariantIndex::new(generate_variants(&target));
+        let progress = Progress::new();
+
+        // Sweep range [1, 5]: 5 scalars in 1 partial batch. The engine
+        // should call `progress.add(5)` (the actual count), not
+        // `progress.add(BATCH_SIZE=32)`.
+        let result = precompute_chunk(1, 5, &NullWriter, Some(&index), &progress).unwrap();
+        assert!(
+            result.is_none(),
+            "No match expected in [1, 5] for d=1000000"
+        );
+        let final_progress = progress.get();
+        assert_eq!(
+            final_progress, 5,
+            "Progress must reflect actual scalars processed (5), not BATCH_SIZE (32)"
+        );
+    }
+
+    /// Verifies that both the `2^0` and `sum(2^0..2^0)` variants (which have
+    /// the same V = 1) are stored in the index and either can produce a match.
+    #[test]
+    fn test_variant_collision_2_0_and_sum_2_0() {
+        let target = ecc::scalar_mul_g(&Scalar::from(2u64)); // d = 2
+        let variants = generate_variants(&target);
+
+        // The first two variants should be 2^0 and sum(2^0..2^0).
+        assert!(variants[0].label == "2^0" || variants[1].label == "2^0");
+        let has_pow = variants.iter().any(|v| v.label == "2^0");
+        let has_sum = variants.iter().any(|v| v.label == "sum(2^0..2^0)");
+        assert!(
+            has_pow && has_sum,
+            "Both 2^0 and sum(2^0..2^0) must be present"
+        );
+
+        // d = 2 means j = 1 for V = 1.
+        let index = VariantIndex::new(variants);
+        let p_1 = ecc::scalar_mul_g(&Scalar::from(1u64));
+        let encoded = p_1.to_affine().to_encoded_point(false);
+        let x_bytes = encoded.x().unwrap();
+        let mut x_1 = [0u8; 32];
+        x_1.copy_from_slice(x_bytes.as_ref());
+
+        let m = index
+            .match_x(&x_1, 1)
+            .expect("Must find a match for j=1, V=1");
+        // The matched variant's V is 1, so d = V + j = 2 or d = V - j = 0.
+        assert!(
+            m.candidates.contains(&"2".to_string()),
+            "Candidates must include d=2, got: {:?}",
+            m.candidates
+        );
+    }
+
+    // Property: `generate_variants` produces a non-empty variant set for any
+    // non-identity target.
+    proptest::proptest! {
+        #[test]
+        fn prop_generate_variants_count(d in 1u64..1_000_000u64) {
+            let target = ecc::scalar_mul_g(&Scalar::from(d));
+            let variants = generate_variants(&target);
+            proptest::prop_assert!(!variants.is_empty(),
+                "Variant set must be non-empty for non-identity targets");
+            // For typical targets, no variant collapses to the identity.
+            // We allow some slack (>= 500) but expect the full 512 in
+            // the common case.
+            proptest::prop_assert!(variants.len() >= 500,
+                "Expected >= 500 variants, got {}", variants.len());
+        }
+    }
+
+    // Property: `scalar_to_hex_trimmed` produces a hex string that, when
+    // padded back to 32 bytes and decoded, yields the original scalar.
+    proptest::proptest! {
+        #[test]
+        fn prop_scalar_to_hex_trimmed_inverts(d in 0u64..1_000_000u64) {
+            let s = Scalar::from(d);
+            let hex_str = scalar_to_hex_trimmed(&s);
+
+            // Pad with leading zeros to 64 hex chars.
+            let padded = format!("{:0>64}", hex_str);
+            let bytes = hex::decode(&padded).expect("hex must decode");
+            let recovered = hex_to_scalar_for_test(&padded).expect("must parse");
+            proptest::prop_assert_eq!(recovered, s, "Roundtrip must preserve scalar value");
+            let _ = bytes; // silence unused warning
+        }
+    }
+
+    /// Helper for `prop_scalar_to_hex_trimmed_inverts` — re-implements
+    /// `hex_to_scalar` to avoid a cross-module dependency in the test.
+    fn hex_to_scalar_for_test(hex_str: &str) -> Option<Scalar> {
+        use k256::elliptic_curve::PrimeField;
+        let bytes = hex::decode(hex_str).ok()?;
+        let mut fixed_bytes = [0u8; 32];
+        let len = bytes.len().min(32);
+        let src = &bytes[..len];
+        fixed_bytes[32 - src.len()..].copy_from_slice(src);
+        Option::from(Scalar::from_repr(fixed_bytes.into()))
     }
 }

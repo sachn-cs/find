@@ -7,7 +7,10 @@
 //! Owns the execution loop, checkpoint lifecycle, and strategy selection
 //! (cached vs compute-bound). Contains no ECC arithmetic and no direct I/O
 //! beyond delegating to [`persistence`].
+//!
+//! The [`Config`] type and the related constants live in [`crate::config`].
 
+use crate::config::{Config, DEFAULT_CACHE_CHUNK_SIZE, MAX_SEARCH, MIN_J, TRILLION};
 use crate::ecc;
 use crate::error::{FindError, Result};
 use crate::persistence;
@@ -15,56 +18,13 @@ use crate::search::{self, Progress, SearchMatch, VariantIndex};
 use std::path::Path;
 use tracing::{info, warn};
 
-/// Scalar step size per research segment: 1 Trillion.
-const TRILLION: u64 = 1_000_000_000_000;
-
-/// Manageable binary cache chunk size: 1 Billion = 32GB on disk.
-const CACHE_CHUNK_SIZE: u64 = 1_000_000_000;
-
-/// Theoretical maximum search boundary for 64-bit scalars.
-const MAX_SEARCH: u64 = u64::MAX;
-
-/// Minimum non-zero search scalar.
-///
-/// \(j = 0\) yields the identity point, which cannot match a valid variant
-/// because every variant is guaranteed to have a non-zero X-coordinate.
-const MIN_J: u64 = 1;
-
-/// Configuration required to drive a search session.
-///
-/// All fields are owned strings so that the configuration can outlive the
-/// CLI argument parser.
-pub struct Config {
-    /// HEX-encoded SEC1 public key (compressed or uncompressed).
-    pub pubkey: String,
-    /// Root directory for checkpoints, caches, and exported variant metadata.
-    pub output_dir: String,
-    /// Whether to generate and persist binary cache files.
-    ///
-    /// Enabling this consumes approximately 32GB of disk per billion scalars
-    /// but allows subsequent sweeps to run at I/O-bound speeds.
-    pub cache_points: bool,
-}
-
-impl Config {
-    /// Validates that all required fields are non-empty and well-formed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FindError::InvalidPublicKey`] if the pubkey string is empty.
-    pub fn validate(&self) -> Result<()> {
-        if self.pubkey.trim().is_empty() {
-            return Err(FindError::InvalidPublicKey(
-                "Public key cannot be empty".to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
+// Re-export commonly used config types from this module for backward
+// compatibility with downstream code that imported them from `orchestrator`.
+pub use crate::config::SweepRange;
 
 /// Runs a complete search session.
 ///
-/// The session proceeds in chunks of `CACHE_CHUNK_SIZE` scalars. For each
+/// The session proceeds in chunks of `DEFAULT_CACHE_CHUNK_SIZE` scalars. For each
 /// chunk the orchestrator:
 ///
 /// 1. Checks whether a binary cache already exists.
@@ -125,9 +85,9 @@ pub fn run(config: &Config) -> Result<Option<SearchMatch>> {
 
     loop {
         let chunk_start = current_j.saturating_add(1).max(MIN_J);
-        // Detect overflow: if current_j + CACHE_CHUNK_SIZE wraps, chunk_end
+        // Detect overflow: if current_j + DEFAULT_CACHE_CHUNK_SIZE wraps, chunk_end
         // will be less than current_j, meaning we've exhausted the space.
-        let chunk_end = current_j.saturating_add(CACHE_CHUNK_SIZE);
+        let chunk_end = current_j.saturating_add(DEFAULT_CACHE_CHUNK_SIZE);
         if chunk_end < current_j {
             info!("Search space exhausted (overflow detected).");
             break;

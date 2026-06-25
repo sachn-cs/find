@@ -8,7 +8,7 @@
 //! 1. Coordinate normalization (sequential vs batch).
 //! 2. Variant index lookup latency.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use find::ecc;
 use find::search::{self, VariantIndex};
 use k256::elliptic_curve::group::Curve;
@@ -29,7 +29,7 @@ fn bench_batch_normalization(c: &mut Criterion) {
     group.bench_function("single_normalization", |b| {
         b.iter(|| {
             for p in &points {
-                black_box(p.to_affine());
+                std::hint::black_box(p.to_affine());
             }
         })
     });
@@ -38,7 +38,7 @@ fn bench_batch_normalization(c: &mut Criterion) {
         let mut affines = vec![k256::AffinePoint::IDENTITY; points.len()];
         b.iter(|| {
             k256::ProjectivePoint::batch_normalize(&points, &mut affines);
-            black_box(());
+            std::hint::black_box(());
         })
     });
     group.finish();
@@ -61,7 +61,7 @@ fn bench_index_lookup(c: &mut Criterion) {
 
     c.bench_function("flat_index_match", |b| {
         b.iter(|| {
-            black_box(index.match_x(&test_x, 100));
+            std::hint::black_box(index.match_x(&test_x, 100));
         })
     });
 }

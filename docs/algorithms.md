@@ -70,7 +70,7 @@ graph TD
     P --> Cn[sum_255 = 2^256 - 1]
 ```
 
-Note that `2^0` and `sum_0` are identical (`V = 1`); the engine stores both for completeness and the index de-duplicates them via X-coordinate equality checks.
+Note that `2^0` and `sum_0` are identical (`V = 1`); the engine stores both for completeness. The index does not deduplicate them; both entries are stored and either can match. The first match returned by binary search is determined by the sort order, which preserves insertion order for ties (powers of two are inserted first, cumulative sums second).
 
 ### Matching invariant
 
@@ -414,6 +414,33 @@ The cached path is ~100× faster on NVMe hardware but consumes 32 GB per billion
 2. **64-bit range.** The sweep range is `[1, u64::MAX]`. Scalars exceeding `u64::MAX` cannot be addressed.
 3. **No GPU acceleration.** All work is CPU-bound. See the [roadmap](roadmap.md) for future GPU plans.
 4. **No distributed search.** Single-process, single-machine. Manual partitioning is possible; see [operations.md#horizontal-scaling-manual](operations.md#horizontal-scaling-manual).
+
+## Search space limits
+
+The engine imposes three explicit constraints on the input space:
+
+### `u64` scalar range
+
+The sweep range is bounded by `u64::MAX ≈ 1.8 × 10^19`. The `+ G` increment chain uses a `u64` counter for the starting scalar of each batch. Extending the sweep to `n - 1 ≈ 1.16 × 10^77` would require either:
+
+- A `U256` counter with a more complex increment chain (out of scope).
+- Pre-multiplication by a chunk-size constant (defeats the `+ G` optimization for the first point in each batch).
+
+For the intended use case (small-scalar search), the `u64` range is more than sufficient.
+
+### Identity-point skip for variants
+
+When a variant anchor `V` equals the unknown private key `d`, the shifted target `P - V·G` is the identity point. The `generate_variants` function detects this and skips the variant (logging a warning). For typical targets, none of the 512 variants produce the identity; for pathological targets, the variant count is reduced.
+
+The identity point is also skipped in the sweep by clamping `start` to `MIN_J = 1`. The identity point has no X-coordinate, so a match at `j = 0` would be meaningless.
+
+### Y-parity ambiguity
+
+X-coordinate matching cannot distinguish the Y-parity of the matched point. The engine emits two candidates per match: `V + j` and `V - j` (mod `n`). External validation is required to disambiguate. See [ADR-0007](adr/0007-y-parity-ambiguity.md) for the full discussion.
+
+### Variant collision
+
+`2^0` and `sum(2^0..2^0)` are both `V = 1`. The engine stores both entries; the index does not deduplicate. The first match returned by binary search is determined by the sort order (powers of two are inserted first, cumulative sums second).
 
 ## References
 

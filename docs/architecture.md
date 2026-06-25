@@ -151,7 +151,7 @@ sequenceDiagram
 **Performance characteristics:**
 
 - `BATCH_SIZE = 32` points per batch normalization. See [ADR-0002](adr/0002-batch-normalization.md).
-- `MAX_BATCH = 32` is a `pub(crate)` constant; the hot-path arrays are stack-allocated.
+- `MAX_BATCH = 32` is a private constant in the `search` module; the hot-path arrays are stack-allocated.
 - Within a batch, the `+ G` increment chain is used (rather than `N` independent scalar multiplications). For batch start `chunk_start`, the first point is `chunk_start · G` and each subsequent point is `+ G`. This is `~N×` faster than per-point scalar multiplication.
 - `rayon::find_map_any` provides early-exit on the first match.
 - The `VariantIndex` reference is shared immutably across all workers; no locks are required because the index is read-only after construction.

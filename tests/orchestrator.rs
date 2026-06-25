@@ -1,5 +1,6 @@
+use find::config::Config;
 use find::ecc;
-use find::orchestrator::{run, Config};
+use find::orchestrator::run;
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use std::time::Instant;
 use tempfile::tempdir;
@@ -20,11 +21,7 @@ fn test_orchestrator_finds_small_scalar() {
     let log_dir = dir.path().join("logs");
     std::fs::create_dir_all(&log_dir).unwrap();
 
-    let config = Config {
-        pubkey,
-        output_dir: output_dir.to_string_lossy().into_owned(),
-        cache_points: false,
-    };
+    let config = Config::new(pubkey, output_dir.to_string_lossy().into_owned(), false);
 
     let start = Instant::now();
     let result = run(&config);
@@ -55,11 +52,11 @@ fn test_orchestrator_finds_small_scalar() {
 #[test]
 fn test_orchestrator_rejects_malformed_pubkey() {
     let dir = tempdir().unwrap();
-    let config = Config {
-        pubkey: "not_a_valid_key".to_string(),
-        output_dir: dir.path().to_string_lossy().into_owned(),
-        cache_points: false,
-    };
+    let config = Config::new(
+        "not_a_valid_key".to_string(),
+        dir.path().to_string_lossy().into_owned(),
+        false,
+    );
 
     let result = run(&config);
     assert!(result.is_err(), "Malformed pubkey must be rejected");
@@ -68,11 +65,7 @@ fn test_orchestrator_rejects_malformed_pubkey() {
 /// Verifies that [`Config::validate`] rejects an empty public key.
 #[test]
 fn test_config_validate_rejects_empty_pubkey() {
-    let config = Config {
-        pubkey: "   ".to_string(),
-        output_dir: "/tmp".to_string(),
-        cache_points: false,
-    };
+    let config = Config::new("   ".to_string(), "/tmp".to_string(), false);
     let result = config.validate();
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -103,11 +96,7 @@ fn test_orchestrator_resumes_from_checkpoint() {
     std::fs::create_dir_all(&output_dir).unwrap();
     checkpoint.save_atomic(&cp_path).unwrap();
 
-    let config = Config {
-        pubkey,
-        output_dir: output_dir.to_string_lossy().into_owned(),
-        cache_points: false,
-    };
+    let config = Config::new(pubkey, output_dir.to_string_lossy().into_owned(), false);
 
     let result = run(&config);
     assert!(result.is_ok(), "Orchestrator must resume and succeed");
@@ -136,11 +125,7 @@ fn test_orchestrator_finds_small_scalar_with_cache() {
     let log_dir = dir.path().join("logs");
     std::fs::create_dir_all(&log_dir).unwrap();
 
-    let config = Config {
-        pubkey,
-        output_dir: output_dir.to_string_lossy().into_owned(),
-        cache_points: true,
-    };
+    let config = Config::new(pubkey, output_dir.to_string_lossy().into_owned(), true);
 
     let result = run(&config);
     assert!(

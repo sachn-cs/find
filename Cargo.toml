@@ -9,7 +9,6 @@ license = "MIT"
 repository = "https://github.com/sachn-cs/find"
 homepage = "https://github.com/sachn-cs/find"
 documentation = "https://docs.rs/find"
-bugs = "https://github.com/sachn-cs/find/issues"
 readme = "README.md"
 categories = ["cryptography", "command-line-utilities"]
 keywords = ["bitcoin", "secp256k1", "ecc", "search", "cryptography"]
@@ -52,6 +51,9 @@ rand = "0.9"
 rand_chacha = "0.9"
 criterion = "0.8"
 num-traits = "0.2"
+# secp256k1-sys: cross-implementation differential testing against the
+# reference C library. Bundles libsecp256k1 from source.
+secp256k1-sys = { version = "0.10", default-features = false, features = ["std"] }
 
 [[bench]]
 name = "bench"

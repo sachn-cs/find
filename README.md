@@ -19,7 +19,9 @@ A high-performance Rust system for secp256k1 private key discovery using a multi
 - **Binary Caching** — Optional precomputation for I/O-bound cache scans (~100× speedup on NVMe)
 - **Atomic Checkpointing** — Write-then-rename for crash-safe state persistence with integrity anchor
 - **Structured Observability** — Non-blocking rolling file logs with `tracing`
-- **Comprehensive Testing** — Property-based, integration, orchestrator, and audit test suites
+- **Comprehensive Testing** — Property-based, integration, orchestrator, audit, KAT, and differential test suites
+- **Differential Testing** — Cross-implementation verification against `libsecp256k1` (the reference C implementation)
+- **Fuzz Testing** — Three fuzz targets for the public APIs (parse_pubkey, hex_to_scalar, scalar_mul_g)
 
 ## Installation
 

@@ -19,7 +19,7 @@ fn test_mandatory_random_6_to_8_digits() {
     use rand_chacha::ChaCha8Rng;
 
     let mut rng = ChaCha8Rng::seed_from_u64(42);
-    let j: u64 = rng.gen_range(100_000..=99_999_999);
+    let j: u64 = rng.random_range(100_000..=99_999_999);
 
     let v_scalar = BigUint::from(1u64) << 64;
     let n = BigUint::parse_bytes(CURVE_ORDER_HEX.as_bytes(), 16).unwrap();

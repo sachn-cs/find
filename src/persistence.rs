@@ -108,6 +108,12 @@ impl Checkpoint {
             use std::os::unix::io::AsRawFd;
             if let Some(parent) = path.parent() {
                 if let Ok(dir) = std::fs::File::open(parent) {
+                    // SAFETY: `AsRawFd` is a safe trait method that returns a
+                    // valid file descriptor borrowed from `dir`. The descriptor
+                    // remains valid for the duration of the call. `fsync` is
+                    // safe to call on any open file descriptor; failure is
+                    // non-fatal for the rename atomicity guarantee, hence the
+                    // discarded return value.
                     let _ = unsafe { libc::fsync(dir.as_raw_fd()) };
                 }
             }
@@ -159,7 +165,7 @@ impl FileCacheWriter {
     /// Returns [`FindError::Io`] if the file descriptor does not support
     /// truncation.
     pub fn preallocate(&self, len: u64) -> Result<()> {
-        let file = self.file.lock().unwrap();
+        let file = self.file.lock().expect("file cache writer mutex poisoned");
         file.set_len(len).map_err(FindError::Io)?;
         Ok(())
     }
@@ -170,13 +176,13 @@ impl CacheWriter for FileCacheWriter {
         #[cfg(unix)]
         {
             use std::os::unix::fs::FileExt;
-            let file = self.file.lock().unwrap();
+            let file = self.file.lock().expect("file cache writer mutex poisoned");
             file.write_all_at(data, offset)
         }
         #[cfg(not(unix))]
         {
             use std::io::{Seek, SeekFrom, Write};
-            let mut file = self.file.lock().unwrap();
+            let mut file = self.file.lock().expect("file cache writer mutex poisoned");
             file.seek(SeekFrom::Start(offset))?;
             file.write_all(data)
         }
@@ -450,5 +456,33 @@ mod tests {
         assert_eq!(read_back.len(), 64);
         assert_eq!(&read_back[..32], &data[..]);
         assert_eq!(&read_back[32..], &data[..]);
+    }
+
+    // Property: random checkpoints roundtrip through `save_atomic` + `load` + `verify`.
+    proptest::proptest! {
+        #[test]
+        fn prop_checkpoint_roundtrip_with_random_j(j in 0u64..1_000_000u64) {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("cp.json");
+
+            // Compute the integrity anchor.
+            let expected_p = crate::ecc::scalar_mul_g(&Scalar::from(j));
+            let expected_x = crate::ecc::to_hex_x(&expected_p);
+
+            let cp = Checkpoint {
+                last_j: j,
+                pubkey: "test_pubkey".to_string(),
+                last_x: expected_x.clone(),
+            };
+            cp.save_atomic(&path).unwrap();
+            let loaded = Checkpoint::load(&path).unwrap();
+
+            proptest::prop_assert_eq!(loaded.last_j, j);
+            proptest::prop_assert_eq!(loaded.pubkey.as_str(), "test_pubkey");
+            proptest::prop_assert_eq!(loaded.last_x.as_str(), expected_x.as_str());
+
+            // Verify must pass for the matching pubkey.
+            proptest::prop_assert!(loaded.verify("test_pubkey").is_ok());
+        }
     }
 }

@@ -1,0 +1,102 @@
+// Copyright (c) 2026 Sachin (https://github.com/sachn-cs)
+// Released under MIT. See LICENSE-MIT.
+// THIS SOFTWARE IS FOR EDUCATIONAL AND RESEARCH PURPOSES ONLY.
+
+//! Known-Answer Tests (KAT) for the secp256k1 search engine.
+//!
+//! These tests load canonical secp256k1 test vectors and verify that the
+//! engine's wrapper around `k256` produces the correct results. The vectors
+//! are sourced from SEC 2 and the official secp256k1 test suite.
+
+use find::ecc;
+use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::ProjectivePoint;
+
+/// The canonical compressed SEC1 encoding of the secp256k1 generator point G.
+///
+/// Source: SEC 2 v2.0, Section 2.7.1.
+const G_COMPRESSED: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+
+/// The canonical uncompressed SEC1 encoding of G.
+const G_UNCOMPRESSED: &str = "04\
+79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\
+483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8";
+
+/// Verifies that `parse_pubkey` accepts the canonical compressed encoding of G.
+#[test]
+fn kat_g_compressed() {
+    let p = ecc::parse_pubkey(G_COMPRESSED).expect("canonical compressed G must parse");
+    assert_eq!(p, ecc::generator());
+}
+
+/// Verifies that `parse_pubkey` accepts the canonical uncompressed encoding of G.
+#[test]
+fn kat_g_uncompressed() {
+    let p = ecc::parse_pubkey(G_UNCOMPRESSED).expect("canonical uncompressed G must parse");
+    assert_eq!(p, ecc::generator());
+}
+
+/// Verifies that `scalar_mul_g(1)` equals the generator point.
+#[test]
+fn kat_scalar_mul_g_one() {
+    use k256::Scalar;
+    let p = ecc::scalar_mul_g(&Scalar::from(1u64));
+    assert_eq!(p, ecc::generator());
+}
+
+/// Verifies that `scalar_mul_g(2)` produces the expected point (2G).
+#[test]
+fn kat_scalar_mul_g_two() {
+    use k256::Scalar;
+    let p_2g = ecc::scalar_mul_g(&Scalar::from(2u64));
+    let expected = ecc::generator() + ecc::generator();
+    assert_eq!(p_2g, expected);
+}
+
+/// Verifies that `to_hex_x` of the generator matches the SEC1 X-coordinate.
+///
+/// The X-coordinate of G is `0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798`.
+#[test]
+fn kat_g_x_coordinate() {
+    let x = ecc::to_hex_x(&ecc::generator());
+    assert_eq!(
+        x,
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    );
+}
+
+/// Verifies that `is_identity` correctly identifies the identity point.
+#[test]
+fn kat_is_identity() {
+    assert!(ecc::is_identity(&ProjectivePoint::IDENTITY));
+    assert!(!ecc::is_identity(&ecc::generator()));
+}
+
+/// Verifies that `x_bytes` returns `None` for the identity point and `Some`
+/// for a non-identity point.
+#[test]
+fn kat_x_bytes() {
+    assert!(ecc::x_bytes(&ProjectivePoint::IDENTITY).is_none());
+    let x = ecc::x_bytes(&ecc::generator()).expect("G must have an X-coordinate");
+    assert_eq!(
+        hex::encode(x),
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    );
+}
+
+/// Verifies the SEC1 round-trip: parsing a public key and re-encoding it
+/// produces the same bytes.
+#[test]
+fn kat_sec1_roundtrip_compressed() {
+    let p = ecc::parse_pubkey(G_COMPRESSED).unwrap();
+    let encoded = p.to_affine().to_encoded_point(true);
+    assert_eq!(hex::encode(encoded.as_bytes()), G_COMPRESSED);
+}
+
+/// Verifies the SEC1 round-trip for the uncompressed encoding.
+#[test]
+fn kat_sec1_roundtrip_uncompressed() {
+    let p = ecc::parse_pubkey(G_UNCOMPRESSED).unwrap();
+    let encoded = p.to_affine().to_encoded_point(false);
+    assert_eq!(hex::encode(encoded.as_bytes()), G_UNCOMPRESSED);
+}
