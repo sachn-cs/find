@@ -1,85 +1,130 @@
-# Deployment Guide
+# Deployment
 
-This guide covers deploying the Secp256k1 Find Tool in various environments.
+This document covers building, packaging, and deploying the `find` tool. For runtime operations (backup, monitoring, scaling), see [operations.md](operations.md). For performance tuning, see [performance.md](performance.md).
 
-## System Requirements
+## System requirements
 
-### Minimum Requirements
+### Minimum requirements
 
-- **CPU**: 2+ cores (4+ recommended)
-- **RAM**: 4GB minimum, 8GB+ recommended
-- **Storage**: 10GB free disk space
-- **OS**: Linux, macOS, or Windows
+- **CPU:** 2+ cores (4+ recommended)
+- **RAM:** 4 GB minimum, 8 GB+ recommended
+- **Storage:** 10 GB free disk space
+- **OS:** Linux, macOS, or Windows
 
-### Recommended for Production
+### Recommended for production
 
-- **CPU**: 8+ cores for parallel search
-- **RAM**: 16GB+ for large searches
-- **Storage**: 100GB+ SSD for binary caching
-- **GPU**: Optional, for future CUDA acceleration
+- **CPU:** 8+ physical cores for parallel search
+- **RAM:** 16 GB+ for large searches
+- **Storage:** 100 GB+ NVMe SSD for binary caching
+- **GPU:** Not currently used; reserved for future CUDA acceleration (see [roadmap.md](roadmap.md))
 
-## Building for Production
+For the full compatibility matrix, see [overview.md#compatibility-matrix](overview.md#compatibility-matrix).
 
-### Release Build
+## Building from source
+
+### Release build
 
 ```bash
-# Optimized release build
+# Standard release build (recommended for production)
 cargo build --release
 
-# Or using Make
+# Or via Makefile
 make build
 ```
 
-The release binary is optimized with:
-- `opt-level = 3` — Maximum optimization
-- `lto = "fat"` — Link-time optimization across all crates
-- `codegen-units = 1` — Single codegen unit for maximum optimization
-- `panic = 'abort'` — No unwinding, smaller binary
-- `strip = true` — Strip debug symbols
+The release binary is optimized for maximum throughput. The build profile (defined in `Cargo.toml`):
 
-### Cross-Compilation
+| Setting | Value | Effect |
+|---|---|---|
+| `opt-level` | `3` | Maximum LLVM optimization |
+| `lto` | `"fat"` | Link-time optimization across all crates |
+| `codegen-units` | `1` | Single code generation unit (enables inlining across crate boundaries) |
+| `panic` | `'abort'` | No unwinding; smaller binary |
+| `strip` | `true` | Strip debug symbols from the binary |
+| `overflow-checks` | `true` | Enable integer overflow checks in release mode (correctness > speed) |
 
-For deploying to different architectures:
+The binary is produced at `target/release/find` (or `find.exe` on Windows).
+
+### Cross-compilation
+
+For deploying to architectures other than the host:
 
 ```bash
-# Install target
+# Add a target
 rustup target add x86_64-unknown-linux-musl
 
-# Build for target
+# Build for the target
 cargo build --release --target x86_64-unknown-linux-musl
 ```
 
-## Docker Deployment
+The release pipeline (`.github/workflows/release.yml`) cross-compiles for all five supported targets; see [maintenance/release.md](maintenance/release.md#build-matrix) for the full matrix.
 
-### Dockerfile
+## Container deployment
+
+### Multi-stage Dockerfile
+
+A minimal, production-ready Dockerfile:
 
 ```dockerfile
-FROM rust:1.70 as builder
+# Build stage
+FROM rust:1.70 AS builder
 
 WORKDIR /app
 COPY . .
 RUN cargo build --release
 
+# Runtime stage
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates
-COPY --from=builder /app/target/release/find /usr/local/bin/
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/find /usr/local/bin/find
 
 ENTRYPOINT ["find"]
 ```
 
-### Build and Run
+The build stage uses the full `rust:1.70` image (required for the Rust toolchain); the runtime stage uses `debian:bookworm-slim` for a small footprint.
+
+### Build and run
 
 ```bash
-# Build image
+# Build the image
 docker build -t secp256k1-find .
 
-# Run container
-docker run --rm secp256k1-find --pubkey <HEX_SEC1>
+# Run a search
+docker run --rm secp256k1-find --pubkey 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
+
+# Mount persistent data and log directories
+docker run --rm \
+  -v $(pwd)/data:/data \
+  -v $(pwd)/logs:/logs \
+  secp256k1-find --pubkey 0279be66... --output-dir /data --log-dir /logs
 ```
 
-## Systemd Service (Linux)
+### Static binary variant
 
-### Service File
+For a smaller image, use the `x86_64-unknown-linux-musl` target:
+
+```dockerfile
+FROM rust:1.70 AS builder
+RUN rustup target add x86_64-unknown-linux-musl
+WORKDIR /app
+COPY . .
+RUN cargo build --release --target x86_64-unknown-linux-musl
+
+FROM scratch
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/find /find
+ENTRYPOINT ["/find"]
+```
+
+The resulting image is ~10 MB.
+
+## Systemd service (Linux)
+
+### Service unit file
+
+Create `/etc/systemd/system/find@.service`:
 
 ```ini
 [Unit]
@@ -97,235 +142,127 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/find /var/log/find
+
 [Install]
 WantedBy=multi-user.target
 ```
 
+The `%i` instance parameter is the SEC1 pubkey (or a short hash of it).
+
 ### Installation
 
 ```bash
-# Copy binary
-cp target/release/find /opt/find/
-
-# Create service user
+# Create a dedicated service user
 useradd -r -s /bin/false find
 
-# Create directories
+# Copy the binary
+cp target/release/find /opt/find/
+chmod 755 /opt/find/find
+
+# Create state directories
 mkdir -p /var/lib/find /var/log/find
 chown find:find /var/lib/find /var/log/find
+chmod 700 /var/lib/find
+chmod 750 /var/log/find
 
-# Install service
-cp find.service /etc/systemd/system/
+# Install the service unit
+cp find@.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable find@<PUBKEY_HASH>
+
+# Start the service for a specific pubkey
+systemctl enable find@0279be66...hex...
+systemctl start find@0279be66...hex...
 ```
 
-## Environment Configuration
+The `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem`, and `ProtectHome` directives provide basic sandboxing.
 
-### Environment Variables
+## Environment configuration
+
+### Environment variables
 
 | Variable | Default | Description |
-|----------|---------|-------------|
-| `RUST_LOG` | `info` | Log level filter |
+|---|---|---|
+| `RUST_LOG` | `info` | Log level filter (`trace`, `debug`, `info`, `warn`, `error`) |
 | `RUST_BACKTRACE` | `0` | Set to `1` for backtraces on panic |
 
-### Configuration File
+For full configuration including compile-time constants, see [configuration.md](configuration.md).
 
-For complex deployments, consider wrapping the binary in a script:
+### Configuration wrapper script
+
+For complex deployments, wrap the binary in a script:
 
 ```bash
 #!/bin/bash
 # /opt/find/run.sh
 
-export RUST_LOG=info
-export RUST_BACKTRACE=1
+set -euo pipefail
+
+export RUST_LOG="${RUST_LOG:-info}"
+export RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 
 exec /opt/find/find \
-  --pubkey "$PUBKEY" \
-  --output-dir /var/lib/find \
-  --log-dir /var/log/find
+  --pubkey "${PUBKEY:?PUBKEY is required}" \
+  --output-dir "${OUTPUT_DIR:-/var/lib/find}" \
+  --log-dir "${LOG_DIR:-/var/log/find}" \
+  "$@"
 ```
 
-## Monitoring
+## Security hardening
 
-### Log Monitoring
+See [security.md](security.md) for the full security model. The deployment-specific points:
 
-Logs are written to the configured log directory with daily rotation:
-
-```bash
-# Follow logs in real-time
-tail -f logs/find.log.*
-
-# Search for errors
-grep -r "ERROR" logs/
-
-# Check for matches
-grep -r "MATCH DISCOVERED" logs/
-```
-
-### Checkpoint Monitoring
-
-Monitor checkpoint progress:
+### File permissions
 
 ```bash
-# Check checkpoint file
-cat data/checkpoint.json | jq .
-
-# Monitor checkpoint updates
-watch -n 5 'ls -la data/checkpoint.json'
-```
-
-### System Metrics
-
-Monitor system resources during search:
-
-```bash
-# CPU usage
-htop
-
-# Disk I/O
-iostat -x 1
-
-# Memory usage
-free -h
-```
-
-## Performance Tuning
-
-### CPU Optimization
-
-- Ensure the process runs on dedicated cores
-- Disable hyperthreading for consistent performance
-- Use `taskset` to bind to specific CPU cores
-
-### Memory Optimization
-
-- Reduce `CACHE_CHUNK_SIZE` for memory-constrained environments
-- Monitor heap usage with `jemalloc` or `tcmalloc`
-- Use `MALLOC_CONF` for allocator tuning
-
-### I/O Optimization
-
-- Use NVMe SSDs for binary cache storage
-- Ensure filesystem supports `pwrite` atomically (ext4, XFS, APFS)
-- Consider RAID 0 for maximum throughput
-
-## Backup and Recovery
-
-### Backup Strategy
-
-```bash
-# Backup checkpoints
-cp data/checkpoint.json data/checkpoint.json.backup
-
-# Backup binary caches
-tar -czf cache-backup.tar.gz data/cache/
-
-# Backup logs
-tar -czf logs-backup.tar.gz logs/
-```
-
-### Recovery
-
-```bash
-# Restore checkpoint
-cp data/checkpoint.json.backup data/checkpoint.json
-
-# Verify integrity
-# The tool will verify on next run
-```
-
-## Security Hardening
-
-### File Permissions
-
-```bash
-# Restrict data directory
+# Restrict the data directory
 chmod 700 /var/lib/find
 chown find:find /var/lib/find
 
-# Restrict log directory
+# Restrict the log directory
 chmod 750 /var/log/find
 chown find:find /var/log/find
 ```
 
-### Network Security
+### Network isolation
 
-- The tool does not require network access
-- Block outbound connections if running on shared systems
-- Use firewall rules to isolate the execution environment
+The tool does not require network access. Block outbound connections if running on shared systems:
 
-### Input Validation
+```bash
+# iptables (Linux)
+iptables -A OUTPUT -m owner --uid-owner find -j REJECT
 
-- All public keys are validated on input
-- Checkpoint integrity is verified on resume
-- Binary cache files are validated for correct size
+# Or use a network namespace
+unshare -n -- /opt/find/find --pubkey 0279be66...
+```
 
-## Scaling
+### Filesystem selection
 
-### Vertical Scaling
+For the binary cache, use a filesystem that supports atomic `pwrite_at`:
 
-- Add more CPU cores for parallel search
-- Increase memory for larger batch sizes
-- Use faster storage for I/O-bound operations
+- **Linux:** ext4, XFS, btrfs
+- **macOS:** APFS
+- **Windows:** NTFS
 
-### Horizontal Scaling
+Avoid network filesystems (NFS, SMB) for the cache; they may not support atomic `pwrite_at`.
 
-- Distribute search ranges across multiple machines
-- Share binary cache files via NFS or object storage
-- Coordinate checkpoints via shared filesystem
+## Monitoring
+
+See [operations.md#monitoring](operations.md#monitoring) for log monitoring, checkpoint monitoring, and system metrics.
 
 ## Troubleshooting
 
-### Common Issues
+For deployment-time errors, see [troubleshooting.md](troubleshooting.md#build-errors).
 
-1. **Out of Memory**: Reduce batch size or cache chunk size
-2. **Checkpoint Corruption**: Delete checkpoint and restart
-3. **Permission Denied**: Check file ownership and permissions
-4. **Slow Performance**: Verify release build optimizations
+## See also
 
-### Debug Mode
-
-```bash
-# Run with debug logging
-RUST_LOG=debug ./find --pubkey <HEX>
-
-# Run with trace logging (very verbose)
-RUST_LOG=trace ./find --pubkey <HEX>
-```
-
-### Performance Profiling
-
-```bash
-# Generate profiling data
-perf record -g ./find --pubkey <HEX>
-
-# Analyze with flamegraph
-perf script | stackcollapse-perf.pl | flamegraph.pl > flamegraph.svg
-```
-
-## Version Upgrades
-
-### Upgrade Process
-
-1. Stop the running service
-2. Backup checkpoint and cache files
-3. Install new binary
-4. Verify checksum
-5. Start service
-6. Monitor logs for errors
-
-### Rollback
-
-If issues occur:
-1. Stop the service
-2. Restore previous binary
-3. Restore checkpoint from backup
-4. Restart service
-
-## Support
-
-For deployment issues:
-- Check [FAQ](faq.md) for common problems
-- Review [Architecture](architecture.md) for design details
-- Open an issue on GitHub with deployment details
+- [operations.md](operations.md) — runtime operations
+- [configuration.md](configuration.md) — environment variables and constants
+- [performance.md](performance.md) — performance tuning
+- [security.md](security.md) — security model and hardening
+- [maintenance/release.md](maintenance/release.md) — release process

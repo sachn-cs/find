@@ -1,5 +1,5 @@
 # cargo-deny configuration for license and dependency auditing
-# https:// EmbarkStudios/cargo-deny
+# https://github.com/EmbarkStudios/cargo-deny
 
 [advisories]
 vulnerability = "deny"

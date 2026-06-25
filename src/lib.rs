@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Sachin (https://github.com/sachn-cs)
-// Released under MIT OR Apache-2.0. See LICENSE-MIT or LICENSE-APACHE.
+// Released under MIT. See LICENSE-MIT.
 // THIS SOFTWARE IS FOR EDUCATIONAL AND RESEARCH PURPOSES ONLY.
 
 //! # Secp256k1 Find Tool

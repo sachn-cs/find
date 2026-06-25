@@ -14,14 +14,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - EditorConfig for consistent code formatting across editors
 - Gitattributes for line ending normalization
 - GitHub Sponsors funding configuration
+- Restructured documentation under `docs/` with single source of truth: overview, architecture, algorithms, modules, CLI, configuration, observability, performance, benchmarks, testing, deployment, operations, troubleshooting, security, FAQ, glossary, references, roadmap, maintenance, and ADR directory
+- Six Architecture Decision Records (ADRs) capturing major design choices: multi-variant search, batch normalization, atomic checkpointing, error hierarchy, pure search module, binary cache format
 
 ### Changed
 - Enhanced README with improved structure, badges, and roadmap
 - Expanded CONTRIBUTING.md with detailed development guidelines
 - Improved .gitignore with comprehensive coverage for IDEs, OS files, and project artifacts
+- Consolidated duplicated content: merged `ARCHITECTURE.md` and `docs/architecture.md` into a single `docs/architecture.md`; moved `ALGORITHMS.md`, `TESTING.md`, and `RELEASE.md` into `docs/`
+- Replaced ASCII diagrams with Mermaid diagrams in architecture documentation
 
 ### Fixed
 - Repository metadata consistency
+- `deny.toml`: corrected malformed cargo-deny URL
+- `CONTRIBUTING.md`: fixed `PROPTEST_CODE` → `PROPTEST_CASES` typo
+- `CODEOWNERS`: removed stale reference to nonexistent `OWNERS` file
+- Documentation: clarified `TRILLION` (audit boundary) vs. `CACHE_CHUNK_SIZE` (cache chunk size) distinction
 
 ## [1.0.0] - 2026-04-12
 

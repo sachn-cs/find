@@ -16,5 +16,6 @@
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` passes
 - [ ] `cargo test --all-targets --all-features` passes
 - [ ] New tests added for changed behavior
-- [ ] Documentation updated (README, ARCHITECTURE, or inline docs)
+- [ ] Documentation updated (README, [docs/](docs/README.md), or inline docs)
 - [ ] CHANGELOG.md updated for user-facing changes
+- [ ] ADR added/updated for substantial design changes (see [docs/adr/README.md](docs/adr/README.md))

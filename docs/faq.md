@@ -1,10 +1,12 @@
-# Frequently Asked Questions
+# FAQ — Frequently Asked Questions
+
+This document answers conceptual questions about the `find` tool. For operational issues, see [troubleshooting.md](troubleshooting.md). For performance tuning, see [performance.md](performance.md).
 
 ## General
 
 ### What is the Secp256k1 Find Tool?
 
-The Secp256k1 Find Tool is a high-performance Rust system for educational and research exploration of elliptic curve mathematics. It demonstrates multi-variant range-splitting algorithms for secp256k1 private key discovery.
+A high-performance Rust system for educational and research exploration of elliptic curve mathematics. It demonstrates multi-variant range-splitting algorithms for secp256k1 private key discovery.
 
 ### Is this tool for recovering lost private keys?
 
@@ -12,7 +14,11 @@ The Secp256k1 Find Tool is a high-performance Rust system for educational and re
 
 ### What is secp256k1?
 
-Secp256k1 is an elliptic curve used in Bitcoin and other cryptocurrencies. It provides 256-bit security and is optimized for efficient computation.
+Secp256k1 is the elliptic curve used by Bitcoin and many other cryptocurrencies. It provides 256-bit security and is optimized for efficient computation. For the formal specification, see [references.md](references.md#standards).
+
+### What does the project license cover?
+
+The project is licensed under the MIT License. See [LICENSE-MIT](../LICENSE-MIT) for the full text and [SECURITY.md](../SECURITY.md) for the security policy.
 
 ## Installation
 
@@ -26,7 +32,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 ### Can I run this on Windows?
 
-Yes. The tool supports Linux, macOS, and Windows. Some features like binary caching may have different performance characteristics on Windows.
+Yes. The tool supports Linux, macOS, and Windows. Some features like binary caching may have different performance characteristics on Windows because the parent-directory `fsync` is a no-op on NTFS. See [security.md#filesystem-selection](security.md#filesystem-selection).
 
 ### How do I build from source?
 
@@ -35,6 +41,8 @@ git clone https://github.com/sachn-cs/find.git
 cd find
 cargo build --release
 ```
+
+The binary is at `target/release/find`. For other build options, see [deployment.md](deployment.md).
 
 ## Usage
 
@@ -50,124 +58,119 @@ Example:
 find --pubkey 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
 ```
 
+For the full CLI reference, see [cli.md](cli.md).
+
 ### What does the output mean?
 
 When a match is found, you'll see:
 
-- **Variant**: The shift variant that produced the match
-- **Shift scalar V**: The offset applied to the target point
+```
+============================================================
+MATCH DISCOVERED (Variant: 2^10)
+Shift scalar V: 1024
+Search scalar j: 42
+Target candidates (d = V +/- j):
+  [1] 0x426
+  [2] 0x3e2
+Total Search Duration: 2.345s
+============================================================
+```
+
+- **Variant**: The shift variant that produced the match (e.g. `"2^10"`, `"sum(2^0..2^7)"`)
+- **Shift scalar V**: The original unreduced offset value (decimal)
 - **Search scalar j**: The scalar that matched the X-coordinate
-- **Target candidates**: Two possible private key values
+- **Target candidates**: Two possible private keys (V+j and V-j, both reduced mod n)
+- **Total Search Duration**: Wall-clock time of the entire search session
+
+Both candidates are emitted because X-coordinate matching cannot distinguish Y-parity. The caller must verify each externally.
 
 ### How long does a search take?
 
 Search time depends on:
+
 - CPU performance
-- Size of search range
+- Size of the search range
 - Whether binary caching is used
 - Target scalar value
 
-For small scalars (< 1 billion), results are typically found in seconds to minutes.
+For small scalars (< 1 billion), results are typically found in seconds to minutes. The cached path is ~100× faster on NVMe hardware.
 
 ### What is binary caching?
 
-Binary caching precomputes X-coordinates and stores them in a binary file. This allows subsequent searches to skip ECC arithmetic and perform direct file scans, which can be 10-100x faster.
+Binary caching precomputes X-coordinates and stores them in a binary file. This allows subsequent searches to skip ECC arithmetic and perform direct file scans. See [ADR-0006](adr/0006-binary-cache-format.md) for the cache format.
 
 ### How much disk space does caching require?
 
-Approximately 32GB per billion points cached. For example:
-- 1 billion points ≈ 32GB
-- 10 billion points ≈ 320GB
+Approximately 32 GB per billion points cached. For example:
+
+- 1 billion points ≈ 32 GB
+- 10 billion points ≈ 320 GB
+
+To calculate the total disk requirement for a multi-chunk search, see [operations.md#disk-budget](operations.md#disk-budget).
+
+### How does checkpointing work?
+
+After each one-billion-point cache chunk (`CACHE_CHUNK_SIZE`), the tool writes the current state to `data/checkpoint.json` using write-then-rename for atomic persistence. The checkpoint includes an integrity anchor (the X-coordinate of `last_j · G`) that is recomputed and verified on resume. Mismatch raises `ResearchIntegrityError`.
+
+Note: `TRILLION` (`10^12`) is a separate constant used for the **audit boundary** logging message (every 32 trillion steps), not the cache chunk size. The checkpoint fires at the end of every **billion**-scalar chunk.
+
+See [ADR-0003](adr/0003-atomic-checkpointing.md) for the checkpoint design.
 
 ## Technical
 
 ### How does the algorithm work?
 
 The tool uses multi-variant range-splitting:
-1. Generate 512 shift variants (256 powers-of-2, 256 cumulative sums)
-2. For each scalar `j`, check if `x(j·G) = x(P - V·G)`
-3. When matched, derive candidates `d = V ± j (mod n)`
 
-See [ALGORITHMS.md](../ALGORITHMS.md) for mathematical details.
+1. Generate 512 shift variants (256 powers-of-2, 256 cumulative sums).
+2. For each scalar `j`, check if `x(j·G) = x(P - V·G)`.
+3. When matched, derive candidates `d = V ± j (mod n)`.
+
+See [algorithms.md](algorithms.md) for the mathematical details and [ADR-0001](adr/0001-multi-variant-search.md) for the design rationale.
 
 ### What is batch normalization?
 
-Batch normalization uses Montgomery's simultaneous inversion trick to amortize modular inversion costs across multiple points. For a batch of 32 points, this provides approximately 630x speedup.
+Batch normalization uses Montgomery's simultaneous inversion trick to amortize modular inversion costs across multiple points. For a batch of 32 points, this provides approximately **15–20× speedup** in the normalization phase. See [ADR-0002](adr/0002-batch-normalization.md) and the benchmark in [`benches/bench.rs`](../benches/bench.rs).
 
 ### What is the VariantIndex?
 
-The VariantIndex is a flat sorted array of 512 entries, sorted by X-coordinate. It provides O(log N) binary search for X-coordinate matching, with excellent L1/L2 cache locality.
+The `VariantIndex` is a flat sorted array of 512 entries, sorted by X-coordinate. It provides `O(log 512)` binary search for X-coordinate matching, with excellent L1/L2 cache locality. The full array fits in L1 cache (~16 KB). See [architecture.md#search-layer](architecture.md#search-layer) and [ADR-0001](adr/0001-multi-variant-search.md).
 
-### How does checkpointing work?
+### How does parallelism work?
 
-After each 1-billion-point segment, the tool writes state to `data/checkpoint.json` using write-then-rename for atomic persistence. On resume, it verifies cryptographic integrity before continuing.
+The tool uses `rayon`'s work-stealing parallelism:
+
+- Range is divided into batches of 32 scalars.
+- Each worker processes one batch independently.
+- `find_map_any()` provides early exit on first match.
+- No locks required (the `VariantIndex` is read-only after construction).
+
+A custom Rayon `panic_handler` logs worker panics rather than aborting the process; the `Mutex::lock()` callers tolerate poisoned locks. See [observability.md#rayon-panic-handling](observability.md#rayon-panic-handling).
 
 ## Performance
 
 ### How can I improve performance?
 
-1. **Use release builds**: `cargo build --release`
-2. **Enable binary caching**: `--cache-points` flag
-3. **Use fast storage**: NVMe SSDs for cache files
-4. **Allocate more CPU cores**: The tool uses all available cores
-5. **Optimize batch size**: Adjust `BATCH_SIZE` constant
+1. **Use release builds:** `cargo build --release`
+2. **Enable binary caching:** `--cache-points` flag
+3. **Use fast storage:** NVMe SSDs for cache files
+4. **Allocate more CPU cores:** The tool uses all available physical cores
+5. **Set the CPU governor to `performance`:** prevents frequency drops during long sweeps
+6. **Disable hyperthreading:** reduces cache thrash for the variant index
+
+For the full tuning guide, see [performance.md#tuning-the-runtime-environment](performance.md#tuning-the-runtime-environment).
 
 ### What are the performance characteristics?
 
 | Operation | Complexity | Notes |
-|-----------|-----------|-------|
+|---|---|---|
 | Variant generation | O(512) | One-time per target |
 | Index lookup | O(log 512) | Binary search |
 | Sweep (CPU) | O(R) | Linear over range |
 | Sweep (I/O) | O(R) | Sequential binary read |
+| Batch normalization | 1 inversion + 31 multiplications per 32 points | Montgomery simultaneous inversion |
 
-### How does parallelism work?
-
-The tool uses `rayon`'s work-stealing parallelism:
-- Range is divided into batches of 32 scalars
-- Each worker processes one batch independently
-- `find_map_any()` provides early exit on first match
-- No locks required (index is read-only)
-
-## Troubleshooting
-
-### Build fails with "error[E0599]"
-
-Ensure you have Rust 1.70+ installed:
-
-```bash
-rustc --version
-rustup update
-```
-
-### Checkpoint corruption error
-
-If you see `ResearchIntegrityError`:
-1. The checkpoint file may be corrupted
-2. Delete `data/checkpoint.json`
-3. Restart the search
-
-### Out of memory during caching
-
-Binary caching requires significant memory. Options:
-1. Reduce `CACHE_CHUNK_SIZE` in source code
-2. Avoid caching for very large searches
-3. Use a machine with more RAM
-
-### Search takes too long
-
-1. Verify you're using a release build
-2. Check that all CPU cores are being utilized
-3. Consider using binary caching for repeated searches
-4. The target scalar may be very large
-
-### No match found
-
-This can mean:
-1. The public key is invalid
-2. The scalar is outside the search range
-3. The algorithm needs more time
-4. Check input format (must be valid SEC1 hex)
+See [performance.md#complexity](performance.md#complexity) for the full analysis.
 
 ## Development
 
@@ -184,11 +187,15 @@ cargo test test_name
 PROPTEST_CASES=1000 cargo test --release
 ```
 
+For the full testing strategy, see [testing.md](testing.md).
+
 ### How do I run benchmarks?
 
 ```bash
 make bench
 ```
+
+For benchmark interpretation and historical tracking, see [benchmarks.md](benchmarks.md).
 
 ### How do I check code quality?
 
@@ -196,11 +203,15 @@ make bench
 make lint
 ```
 
+This runs `cargo fmt --check` and `cargo clippy --all-targets --all-features -- -D warnings`.
+
 ### How do I generate coverage reports?
 
 ```bash
 make coverage
 ```
+
+This runs `cargo tarpaulin` and produces an HTML report. Coverage is also tracked via Codecov in CI.
 
 ## Contributing
 
@@ -220,7 +231,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for detailed guidelines.
 
 - Features designed for non-educational use
 - Changes that compromise mathematical correctness
-- Optimizations that sacrifice code clarity
+- Optimizations that sacrifice code clarity without clear benefit
 
 ## Security
 
@@ -231,15 +242,17 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for detailed guidelines.
 ### Is this tool secure?
 
 The tool is designed with security in mind:
-- No unsafe Rust code
+
+- No `unsafe` blocks in application code
 - Input validation on all operations
 - Checkpoint integrity verification
 - Atomic file operations
 
-## License
+For the full security model, see [security.md](security.md).
 
-### What license is this project under?
+## See also
 
-Dual-licensed under MIT and Apache 2.0. You may use this software under the terms of either license at your option.
-
-See [LICENSE-MIT](../LICENSE-MIT) and [LICENSE-APACHE](../LICENSE-APACHE) for full text.
+- [troubleshooting.md](troubleshooting.md) — Operational issues
+- [architecture.md](architecture.md) — System architecture
+- [algorithms.md](algorithms.md) — Mathematical foundation
+- [operations.md](operations.md) — Runbook

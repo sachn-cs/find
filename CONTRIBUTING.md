@@ -102,7 +102,7 @@ make test
 cargo test test_name
 
 # Run with increased property-test cases
-PROPTEST_CODE=1000 cargo test --release
+PROPTEST_CASES=1000 cargo test --release
 ```
 
 ### Linting and Formatting
@@ -215,8 +215,9 @@ Before requesting review, ensure:
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` passes
 - [ ] `cargo test --all-targets --all-features` passes
 - [ ] New tests added for changed behavior
-- [ ] Documentation updated (README, ARCHITECTURE, or inline docs)
+- [ ] Documentation updated (README, [docs/](docs/README.md), or inline docs)
 - [ ] CHANGELOG.md updated for user-facing changes
+- [ ] ADR added/updated for substantial design changes
 
 ### Review Process
 
@@ -257,7 +258,7 @@ Before requesting review, ensure:
 
 ## Testing Requirements
 
-### Test Categories
+See [docs/testing.md](docs/testing.md) for the full testing strategy, test categories, and writing guidelines. The summary:
 
 1. **Unit Tests** — In `src/` files, test individual functions
 2. **Integration Tests** — In `tests/`, test component interactions
@@ -298,12 +299,15 @@ mod tests {
 
 ## Documentation
 
+Documentation lives under [`docs/`](docs/README.md). New substantial design decisions should be captured as an ADR (see [docs/adr/README.md](docs/adr/README.md) for the process and template).
+
 ### Required Documentation
 
 - **Public functions**: Add `///` doc comments
-- **Complex algorithms**: Reference mathematical proofs
-- **Configuration options**: Document in README.md
-- **Breaking changes**: Update CHANGELOG.md
+- **Complex algorithms**: Reference mathematical proofs in [docs/algorithms.md](docs/algorithms.md)
+- **Configuration options**: Document in [docs/configuration.md](docs/configuration.md)
+- **CLI flags**: Document in [docs/cli.md](docs/cli.md)
+- **Breaking changes**: Update [CHANGELOG.md](CHANGELOG.md) and, if applicable, write an ADR
 
 ### Documentation Style
 

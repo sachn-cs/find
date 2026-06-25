@@ -1,69 +1,46 @@
-# Getting Started
+# Getting Started — First Search Walkthrough
 
-This guide will help you get up and running with the Secp256k1 Find Tool.
+This document is a guided walkthrough of your first search with the `find` tool. For installation instructions, see the [README](../README.md). For the full CLI reference, see [cli.md](cli.md).
 
 ## Prerequisites
 
-- **Rust**: Version 1.70 or later (install via [rustup](https://rustup.rs/))
-- **Operating System**: Linux, macOS, or Windows
-- **Storage**: At least 32GB free disk space if using binary caching
+- **Rust:** 1.70 or later (install via [rustup](https://rustup.rs/))
+- **Operating System:** Linux, macOS, or Windows
+- **Storage:** At least 32 GB free if using binary caching
+- **Git:** for cloning the repository
 
-## Installation
-
-### From Source
+## Step 1: Clone and build
 
 ```bash
-# Clone the repository
 git clone https://github.com/sachn-cs/find.git
 cd find
-
-# Build in release mode (recommended for production use)
 cargo build --release
-
-# The binary will be at target/release/find
 ```
 
-### Using Make
+The binary is produced at `target/release/find` (or `find.exe` on Windows).
+
+## Step 2: Run a basic search
+
+The tool requires a SEC1-encoded public key. The Bitcoin secp256k1 generator point's compressed public key is a safe target for a smoke test:
 
 ```bash
-# Build with optimizations
-make build
-
-# Run all checks (lint, test, build)
-make all
-```
-
-## Quick Start
-
-### Basic Search
-
-```bash
-# Run a search against a public key
-./target/release/find --pubkey <HEX_SEC1_PUBLIC_KEY>
-
-# Example with a known public key
 ./target/release/find --pubkey 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
 ```
 
-### With Binary Caching
+This runs a CPU-bound parallel sweep without writing any cache files. The first run is dominated by the 512-variant construction; subsequent runs are faster.
 
-```bash
-# Generate binary cache during search (requires ~32GB per billion points)
-./target/release/find --pubkey <HEX> --cache-points
+You will see output similar to:
 
-# Later runs can reuse the cache for faster scans
+```
+2026-04-12T10:23:45.123Z INFO find::orchestrator: --- STARTING SEGMENT [1 ... 1000000000] ---
+2026-04-12T10:23:45.456Z INFO find::orchestrator: Cache miss. Running parallel sweep...
 ```
 
-### Custom Directories
+For small target scalars (less than a billion), the search typically completes in seconds. For larger scalars, the search continues until the space is exhausted or a match is found.
 
-```bash
-# Specify custom data and log directories
-./target/release/find --pubkey <HEX> --output-dir /path/to/data --log-dir /path/to/logs
-```
+## Step 3: Understand the output
 
-## Understanding the Output
-
-When a match is found, you'll see output like:
+When a match is found:
 
 ```
 ============================================================
@@ -77,59 +54,145 @@ Total Search Duration: 2.345s
 ============================================================
 ```
 
-### Output Fields
+The two candidates (`V + j` and `V - j`) are hex-encoded private keys. Verify each by computing `candidate · G` and checking that the result equals the target public key.
 
-- **Variant**: The shift variant that produced the match
-- **Shift scalar V**: The offset applied to the target point
-- **Search scalar j**: The scalar that matched the X-coordinate
-- **Target candidates**: The two possible private key values (V+j and V-j modulo n)
+If no match is found in the swept range:
 
-## Checkpointing
-
-The tool automatically saves progress to `data/checkpoint.json` after each 1-billion-point segment. If the search is interrupted, it will resume from the last checkpoint on the next run.
-
-### Checkpoint Integrity
-
-On resume, the system verifies the checkpoint's cryptographic integrity by recomputing the X-coordinate of the last scalar. Mismatch causes an error rather than silent data corruption.
-
-## Logging
-
-Logs are written to the specified log directory (default: `logs/`) with daily rotation. Log files are named `find.log.YYYY-MM-DD`.
-
-### Controlling Log verbosity
-
-```bash
-# Set log level via environment variable
-RUST_LOG=debug ./target/release/find --pubkey <HEX>
-
-# Trace level for maximum detail
-RUST_LOG=trace ./target/release/find --pubkey <HEX>
+```
+Search completed. No match found.
 ```
 
-## Next Steps
+## Step 4: With binary caching
 
-- Read [Architecture](architecture.md) for system design details
-- Review [Deployment](deployment.md) for production deployment guidance
-- Check [FAQ](faq.md) for common questions and issues
-- See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines
+To accelerate repeated searches of the same range, enable binary caching:
 
-## Troubleshooting
+```bash
+./target/release/find --pubkey 0279be66... --cache-points
+```
 
-### Build Fails
+This precomputes a 32 GB cache file per billion scalars. The first run takes longer (it must write the cache), but subsequent runs against any public key reuse the cache.
 
-Ensure you have Rust 1.70+ installed:
+The cache is written to `data/checkpoints/chunk_<start_j>.bin`. See [ADR-0006](adr/0006-binary-cache-format.md) for the file format.
+
+## Step 5: Resume an interrupted search
+
+The tool automatically checkpoints progress. If the search is interrupted (Ctrl-C, crash, power loss), the next run resumes from the last checkpoint:
+
+```bash
+# First run (interrupted)
+./target/release/find --pubkey 0279be66...
+^C
+
+# Second run (resumes)
+./target/release/find --pubkey 0279be66...
+```
+
+The resume behavior is:
+
+1. Read `data/checkpoint.json`.
+2. If the pubkey matches, verify the integrity anchor (the X-coordinate of `last_j · G`).
+3. If valid, resume from `last_j + 1`.
+4. If the pubkey differs, start a fresh search (with a warning).
+5. If the anchor is invalid, refuse to proceed with `ResearchIntegrityError`.
+
+See [ADR-0003](adr/0003-atomic-checkpointing.md) for the checkpoint design.
+
+## Sequence diagram: a typical first run
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant F as find binary
+    participant O as Orchestrator
+    participant S as Search
+    participant P as Persistence
+    participant FS as File System
+
+    U->>F: find --pubkey 0279be66...
+    F->>F: parse args, init tracing
+    F->>O: run(&Config)
+    O->>O: validate (pubkey non-empty)
+    O->>S: generate_variants(target_p)
+    S-->>O: 512 variants
+    O->>P: save_variants_to_json
+    P->>FS: write data/points.json
+    O->>O: build VariantIndex
+    O->>P: Checkpoint::load
+    alt no checkpoint
+        O->>O: current_j = 0
+    end
+    O->>O: chunk_start = 1, chunk_end = 1_000_000_000
+    O->>S: perform_chunked_sweep(index, 1, 1_000_000_000)
+    S->>S: for each batch of 32: scalar_mul_g + G chain + batch_normalize + match_x
+    alt match found
+        S-->>O: Some(SearchMatch { j, candidates, ... })
+        O-->>F: Ok(Some(m))
+        F->>U: print MATCH DISCOVERED
+    else no match
+        S-->>O: None
+        O->>P: Checkpoint::save_atomic
+        P->>FS: write-then-rename data/checkpoint.json
+        O-->>F: Ok(None)
+        F->>U: print "Search completed. No match found."
+    end
+```
+
+## Files produced
+
+A typical first run produces:
+
+| File | Purpose |
+|---|---|
+| `data/points.json` | Variant metadata (X-coordinate → offset) |
+| `data/checkpoint.json` | Progress checkpoint |
+| `logs/find.log.YYYY-MM-DD` | Daily-rolling log file |
+
+If `--cache-points` is enabled, additionally:
+
+| File | Purpose |
+|---|---|
+| `data/checkpoints/chunk_<start_j>.bin` | Binary cache for the swept range |
+
+## Next steps
+
+- Read [architecture.md](architecture.md) for the system design.
+- Review [algorithms.md](algorithms.md) for the mathematical foundation.
+- Check [cli.md](cli.md) for the full flag reference.
+- See [operations.md](operations.md) for backup, monitoring, and scaling.
+- Read [troubleshooting.md](troubleshooting.md) if anything goes wrong.
+
+## Common issues
+
+### Build fails
+
+Ensure Rust 1.70+ is installed:
 
 ```bash
 rustc --version
 rustup update
 ```
 
-### Out of Memory
+### Out of memory
 
-Binary caching requires significant memory. Reduce `CACHE_CHUNK_SIZE` or avoid caching for very large searches.
+Binary caching requires significant memory for the precomputation phase. Reduce the cache chunk size or avoid caching for very large searches. See [configuration.md#compile-time-constants](configuration.md#compile-time-constants).
 
-### Checkpoint Corruption
+### Checkpoint corruption
 
-If you encounter checkpoint errors, delete the `data/checkpoint.json` file and restart the search.
+If you encounter checkpoint errors, delete the `data/checkpoint.json` file and restart the search:
 
-For more issues, see the [FAQ](faq.md) or open an issue on GitHub.
+```bash
+rm data/checkpoint.json
+./target/release/find --pubkey 0279be66...
+```
+
+For more issues, see [troubleshooting.md](troubleshooting.md) or open an issue on GitHub.
+
+## See also
+
+- [README.md](../README.md) — Project overview, installation, quick start
+- [architecture.md](architecture.md) — System design
+- [algorithms.md](algorithms.md) — Mathematical foundation
+- [cli.md](cli.md) — Full CLI reference
+- [configuration.md](configuration.md) — Environment variables and constants
+- [troubleshooting.md](troubleshooting.md) — Operational issues
+- [operations.md](operations.md) — Runbook
